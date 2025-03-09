@@ -1,0 +1,148 @@
+# Packaging
+# ---------
+
+[build-system]
+requires = ["setuptools>=67.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# This is the default but we include it to be explicit.
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+# Include the root-package `py.typed` file so Mypy uses inline type annotations.
+"psycopack" = ["psycopack/py.typed"]
+
+# Project
+# -------
+
+[project]
+name = "psycopack"
+version = "0.0.1"
+description = "A customizable way to repack a table using psycopg."
+license.file = "LICENSE"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: BSD License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Typing :: Typed",
+]
+
+[project.urls]
+# See https://daniel.feldroy.com/posts/2023-08-pypi-project-urls-cheatsheet for
+# additional URLs that can be included here.
+repository = "https://github.com/kraken-tech/psycopack"
+changelog = "https://github.com/kraken-tech/psycopack/blob/main/CHANGELOG.md"
+# TODO: add docs site.
+# docs = "https://psycopack.readthedocs.io/"
+
+[project.optional-dependencies]
+# Used for running the test matrix via `nox` locally or by remote checks.
+# Also reused in the `dev` dependencies list.
+pytest-in-nox-base = [
+    "coverage>=7.6.1",
+    "nox>=2024.4.15",
+    "pytest>=8.2.0",
+]
+pytest-in-nox-psycopg3 = [
+    "psycopack[pytest-in-nox-base]",
+    "psycopg[binary]>=3.1.18",
+]
+pytest-in-nox-psycopg2 = [
+    "psycopack[pytest-in-nox-base]",
+    "psycopg2-binary>=2.9.9",
+]
+docs = [
+  "sphinx>=7.4.7",
+  "sphinx_rtd_theme>=2.0.0",
+  "sphinx_lint>=0.9.1",
+  "sphinx_design>=0.6.1",
+]
+dev = [
+    # Testing
+    "psycopack[pytest-in-nox-psycopg3]",
+    "psycopack[docs]",
+
+    # Linting
+    "ruff>=0.5.2",
+    "mypy>=1.10.1",
+    "pre-commit>=3.7.1",
+    "types-psycopg2>=2.9.21.20241019",
+
+    # Packaging
+    "build>=1.2.1",
+]
+
+# Ruff
+# ----
+
+[tool.ruff]
+lint.select = [
+    # pycodestyle
+    "E",
+    # pyflakes
+    "F",
+    # isort
+    "I",
+]
+lint.ignore = [
+    # Ruff's formatter will try to respect the `line-length` setting
+    # but doesn't guarantee it - so we ignore the possible line length
+    # errors that the checker might raise.
+    "E501",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Allow unused imports in `__init__.py` files as these can be convenience
+# imports.
+"**/__init__.py" = [ "F401" ]
+
+[tool.ruff.lint.isort]
+lines-after-imports = 2
+section-order = [
+    "future",
+    "standard-library",
+    "third-party",
+    "first-party",
+    "project",
+    "local-folder",
+]
+
+[tool.ruff.lint.isort.sections]
+"project" = [
+    "psycopack",
+    "tests",
+]
+
+# Mypy
+# ----
+
+[tool.mypy]
+files = "."
+exclude = "build/"
+
+# Use strict defaults
+strict = true
+warn_unreachable = true
+warn_no_return = true
+
+# Pytest
+# ------
+
+[tool.pytest.ini_options]
+# Ensure error warnings are converted into test errors.
+filterwarnings = "error"
+# Ensure that tests fail if an xfail test unexpectedly passes.
+xfail_strict = true
