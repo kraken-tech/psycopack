@@ -62,7 +62,7 @@ def tests(session: nox.Session, dependency_file: str) -> None:
         # called, a `lock_file.write()` call won't write to the file anymore.
         with open(lock_file.name, "a") as f:
             # Add this project dependency to the lock file.
-            f.write(".\n")
+            f.write("-e .\n")
 
         # Use `uv sync` so that all packages that aren't included in the
         # dependency file are removed beforehand. This allow us to not end up
