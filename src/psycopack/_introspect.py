@@ -1,0 +1,223 @@
+import dataclasses
+from textwrap import dedent
+
+from . import _psycopg as psycopg
+
+
+@dataclasses.dataclass
+class Index:
+    name: str
+    definition: str
+
+
+@dataclasses.dataclass
+class Constraint:
+    name: str
+    definition: str
+    is_deferrable: bool
+    is_deferred: bool
+    is_validated: bool
+
+
+@dataclasses.dataclass
+class ReferringForeignKey:
+    name: str
+    definition: str
+    is_validated: bool
+    referring_table: str
+
+
+class Introspector:
+    def __init__(self, *, conn: psycopg.Connection, cur: psycopg.Cursor) -> None:
+        self.conn = conn
+        self.cur = cur
+
+    def get_table_oid(self, *, table: str) -> int | None:
+        self.cur.execute(
+            psycopg.sql.SQL("SELECT oid FROM pg_class WHERE relname = {table};")
+            .format(table=psycopg.sql.Literal(table))
+            .as_string(self.conn)
+        )
+        result = self.cur.fetchone()
+        if result is None:
+            return None
+
+        oid = result[0]
+        assert isinstance(oid, int)
+        return oid
+
+    def get_table_columns(self, *, table: str) -> list[str]:
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                SELECT
+                  column_name
+                FROM
+                  information_schema.columns
+                WHERE
+                  table_name = {table}
+                ORDER BY
+                  ordinal_position;
+                """)
+            )
+            .format(table=psycopg.sql.Literal(table))
+            .as_string(self.conn)
+        )
+        return [r[0] for r in self.cur.fetchall()]
+
+    def get_min_and_max_id(self, *, table: str) -> tuple[int, int]:
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                SELECT
+                  MIN(id) AS min_id,
+                  MAX(id) AS max_id
+                FROM {table};
+                """)
+            )
+            .format(table=psycopg.sql.Identifier(table))
+            .as_string(self.conn)
+        )
+        result = self.cur.fetchone()
+        assert result is not None
+        min_id, max_id = result
+        assert isinstance(min_id, int)
+        assert isinstance(max_id, int)
+        return min_id, max_id
+
+    def get_non_pk_index_def(self, *, table: str) -> list[Index]:
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                SELECT
+                  indexname,
+                  indexdef
+                FROM
+                  pg_indexes
+                WHERE
+                  tablename = {table}
+                  AND indexname != {pkey_index}
+                ORDER BY
+                  indexname,
+                  indexdef;
+                """)
+            )
+            .format(
+                table=psycopg.sql.Literal(table),
+                # TODO: generalise.
+                pkey_index=psycopg.sql.Literal(f"{table}_pkey"),
+            )
+            .as_string(self.conn)
+        )
+        results = self.cur.fetchall()
+        assert results is not None
+        return [Index(name=name, definition=definition) for name, definition in results]
+
+    def get_constraints(self, *, table: str, types: list[str]) -> list[Constraint]:
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                SELECT
+                  conname as constraint_name,
+                  pg_get_constraintdef(oid) AS definition,
+                  condeferrable as is_deferrable,
+                  condeferred as is_deferred,
+                  convalidated as is_validated
+                FROM
+                  pg_constraint
+                WHERE
+                  conrelid = {table}::regclass
+                  AND contype IN ({types})
+                ORDER BY
+                  constraint_name,
+                  definition;
+                """)
+            )
+            .format(
+                table=psycopg.sql.Literal(table),
+                types=psycopg.sql.SQL(", ").join(map(psycopg.sql.Literal, types)),
+            )
+            .as_string(self.conn)
+        )
+        results = self.cur.fetchall()
+        assert results is not None
+        return [
+            Constraint(
+                name=name,
+                definition=definition,
+                is_deferrable=is_deferrable,
+                is_deferred=is_deferred,
+                is_validated=is_validated,
+            )
+            for name, definition, is_deferrable, is_deferred, is_validated in results
+        ]
+
+    def get_referring_fks(self, *, table: str) -> list[ReferringForeignKey]:
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                SELECT
+                  cons.conname AS constraint_name,
+                  pg_get_constraintdef(cons.oid) AS definition,
+                  cons.convalidated AS is_validated,
+                  class.relname AS referring_table
+                FROM
+                  pg_constraint AS cons
+                INNER JOIN
+                  pg_class AS class
+                  ON (cons.conrelid = class.oid)
+                WHERE
+                  confrelid = {table}::regclass
+                  AND contype = 'f'
+                ORDER BY
+                  constraint_name,
+                  definition;
+                """)
+            )
+            .format(table=psycopg.sql.Literal(table))
+            .as_string(self.conn)
+        )
+        results = self.cur.fetchall()
+        assert results is not None
+        return [
+            ReferringForeignKey(
+                name=name,
+                definition=definition,
+                is_validated=is_validated,
+                referring_table=referring_table,
+            )
+            for name, definition, is_validated, referring_table in results
+        ]
+
+    def table_is_empty(self, *, table: str) -> int:
+        self.cur.execute(
+            psycopg.sql.SQL("SELECT NOT EXISTS (SELECT 1 FROM {table} LIMIT 1);")
+            .format(table=psycopg.sql.Identifier(table))
+            .as_string(self.conn)
+        )
+        result = self.cur.fetchone()
+        assert result is not None
+        return bool(result[0])
+
+    def get_index_def(self, *, table: str) -> list[Index]:
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                SELECT
+                  indexname,
+                  indexdef
+                FROM
+                  pg_indexes
+                WHERE
+                  tablename = {table}
+                ORDER BY
+                  indexname,
+                  indexdef;
+                """)
+            )
+            .format(table=psycopg.sql.Literal(table))
+            .as_string(self.conn)
+        )
+        results = self.cur.fetchall()
+        assert results is not None
+        return [Index(name=name, definition=definition) for name, definition in results]

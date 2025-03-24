@@ -1,0 +1,333 @@
+from textwrap import dedent
+
+from . import _psycopg as psycopg
+
+
+class Command:
+    def __init__(self, *, conn: psycopg.Connection, cur: psycopg.Cursor) -> None:
+        self.conn = conn
+        self.cur = cur
+
+    def drop_constraint(self, *, table: str, constraint: str) -> None:
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                ALTER TABLE {table}
+                DROP CONSTRAINT {constraint};
+                """)
+            )
+            .format(
+                table=psycopg.sql.Identifier(table),
+                constraint=psycopg.sql.Identifier(constraint),
+            )
+            .as_string(self.conn)
+        )
+
+    def drop_table_if_exists(self, *, table: str) -> None:
+        self.cur.execute(
+            psycopg.sql.SQL("DROP TABLE IF EXISTS {table}")
+            .format(table=psycopg.sql.Identifier(table))
+            .as_string(self.conn)
+        )
+
+    def create_copy_table(self, *, base_table: str, copy_table: str) -> None:
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                CREATE TABLE {copy_table}
+                (LIKE {table} INCLUDING DEFAULTS);
+                """)
+            )
+            .format(
+                table=psycopg.sql.Identifier(base_table),
+                copy_table=psycopg.sql.Identifier(copy_table),
+            )
+            .as_string(self.conn)
+        )
+
+    def drop_sequence_if_exists(self, *, seq: str) -> None:
+        self.cur.execute(
+            psycopg.sql.SQL("DROP SEQUENCE IF EXISTS {seq};").format(
+                seq=psycopg.sql.Identifier(seq)
+            )
+        )
+
+    def create_sequence(self, *, seq: str) -> None:
+        self.cur.execute(
+            psycopg.sql.SQL("CREATE SEQUENCE {seq};").format(
+                seq=psycopg.sql.Identifier(seq)
+            )
+        )
+
+    def set_table_id_seq(self, *, table: str, seq: str) -> None:
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                ALTER TABLE {table}
+                ALTER COLUMN id
+                SET DEFAULT nextval('{seq}');
+                """)
+            ).format(
+                table=psycopg.sql.Identifier(table),
+                seq=psycopg.sql.Identifier(seq),
+            )
+        )
+
+    def add_pk(self, *, table: str) -> None:
+        self.cur.execute(
+            psycopg.sql.SQL("ALTER TABLE {table} ADD PRIMARY KEY (id);")
+            .format(table=psycopg.sql.Identifier(table))
+            .as_string(self.conn)
+        )
+
+    def create_copy_function(
+        self, *, function: str, table_from: str, table_to: str, columns: list[str]
+    ) -> None:
+        # Note: assumes "id" to be the primary key.
+        # TODO: generalise so other PK types can work.
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                CREATE OR REPLACE FUNCTION {function}(INTEGER, INTEGER)
+                RETURNS VOID AS $$
+
+                  INSERT INTO {table_to}
+                  SELECT {columns}
+                  FROM {table_from}
+                  WHERE id BETWEEN $1 AND $2
+                  ON CONFLICT DO NOTHING
+
+                $$ LANGUAGE SQL SECURITY DEFINER;
+                """)
+            )
+            .format(
+                function=psycopg.sql.Identifier(function),
+                table_from=psycopg.sql.Identifier(table_from),
+                table_to=psycopg.sql.Identifier(table_to),
+                columns=psycopg.sql.SQL(",").join(
+                    [psycopg.sql.Identifier(c) for c in columns]
+                ),
+            )
+            .as_string(self.conn)
+        )
+
+    def drop_trigger_if_exists(self, *, table: str, trigger: str) -> None:
+        self.cur.execute(
+            psycopg.sql.SQL("DROP TRIGGER IF EXISTS {trigger} ON {table}")
+            .format(
+                trigger=psycopg.sql.Identifier(trigger),
+                table=psycopg.sql.Identifier(table),
+            )
+            .as_string(self.conn)
+        )
+
+    def create_copy_trigger(
+        self,
+        trigger_name: str,
+        function: str,
+        table_from: str,
+        table_to: str,
+    ) -> None:
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                CREATE OR REPLACE FUNCTION {trigger_name}()
+                RETURNS TRIGGER AS
+                $$
+                BEGIN
+                  IF ( TG_OP = 'INSERT') THEN
+                    PERFORM {function}(NEW.id, NEW.id);
+                    RETURN NEW;
+                  ELSIF ( TG_OP = 'UPDATE') THEN
+                    DELETE FROM {table_to} WHERE id = OLD.id;
+                    PERFORM {function}(NEW.id, NEW.id);
+                    RETURN NEW;
+                  ELSIF ( TG_OP = 'DELETE') THEN
+                    DELETE FROM {table_to} WHERE id = OLD.id;
+                    RETURN OLD;
+                  END IF;
+                END;
+                $$ LANGUAGE PLPGSQL SECURITY DEFINER;
+
+                CREATE TRIGGER {trigger_name}
+                AFTER INSERT OR UPDATE OR DELETE ON {table_from}
+                FOR EACH ROW EXECUTE PROCEDURE {trigger_name}();
+                """)
+            )
+            .format(
+                trigger_name=psycopg.sql.Identifier(trigger_name),
+                function=psycopg.sql.Identifier(function),
+                table_from=psycopg.sql.Identifier(table_from),
+                table_to=psycopg.sql.Identifier(table_to),
+            )
+            .as_string(self.conn)
+        )
+
+    def create_backfill_log(self, *, table: str) -> None:
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                CREATE TABLE {table} (
+                  id SERIAL PRIMARY KEY,
+                  batch_start INT,
+                  batch_end INT,
+                  finished BOOLEAN
+                );
+                """)
+            )
+            .format(
+                table=psycopg.sql.Identifier(table),
+            )
+            .as_string(self.conn)
+        )
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                CREATE INDEX {log_index}
+                ON {table} ("finished")
+                WHERE finished IS FALSE;
+                """)
+            )
+            .format(
+                log_index=psycopg.sql.Identifier(f"{table}_idx"),
+                table=psycopg.sql.Identifier(table),
+            )
+            .as_string(self.conn)
+        )
+
+    def populate_backfill_log(
+        self,
+        table: str,
+        batch_size: int,
+        min_id: int,
+        max_id: int,
+    ) -> None:
+        batches = (
+            (batch_start, min(batch_start + batch_size - 1, max_id), False)
+            for batch_start in range(min_id, max_id + 1, batch_size)
+        )
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                INSERT INTO {table} (batch_start, batch_end, finished)
+                VALUES {batches};
+                """)
+            )
+            .format(
+                table=psycopg.sql.Identifier(table),
+                batches=psycopg.sql.SQL(", ").join(
+                    map(psycopg.sql.SQL, [str(batch) for batch in batches])
+                ),
+            )
+            .as_string(self.conn)
+        )
+
+    def create_unique_constraint_using_idx(
+        self,
+        table: str,
+        constraint: str,
+        index: str,
+        is_deferrable: bool,
+        is_deferred: bool,
+    ) -> None:
+        add_constraint_sql = dedent("""
+            ALTER TABLE {table}
+            ADD CONSTRAINT {constraint}
+            UNIQUE USING INDEX {index}
+        """)
+        if is_deferrable:
+            add_constraint_sql += " DEFERRABLE"
+        else:
+            add_constraint_sql += " NOT DEFERRABLE"
+
+        if is_deferred:
+            add_constraint_sql += " INITIALLY DEFERRED"
+        else:
+            add_constraint_sql += " INITIALLY IMMEDIATE"
+
+        self.cur.execute(
+            psycopg.sql.SQL(add_constraint_sql)
+            .format(
+                table=psycopg.sql.Identifier(table),
+                constraint=psycopg.sql.Identifier(constraint),
+                index=psycopg.sql.Identifier(index),
+            )
+            .as_string(self.conn)
+        )
+
+    def create_not_valid_constraint_from_def(
+        self, *, table: str, constraint: str, definition: str, is_validated: bool
+    ) -> None:
+        add_constraint_sql = dedent("""
+            ALTER TABLE {table}
+            ADD CONSTRAINT {constraint}
+            {definition}
+        """)
+        if is_validated:
+            # If the definition is for a valid constraint, alter it to be not
+            # valid manually so that it can be created ONLINE.
+            add_constraint_sql += " NOT VALID"
+        self.cur.execute(
+            psycopg.sql.SQL(add_constraint_sql)
+            .format(
+                table=psycopg.sql.Identifier(table),
+                constraint=psycopg.sql.Identifier(constraint),
+                definition=psycopg.sql.SQL(definition),
+            )
+            .as_string(self.conn)
+        )
+
+    def validate_constraint(self, *, table: str, constraint: str) -> None:
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                ALTER TABLE {table}
+                VALIDATE CONSTRAINT {constraint}
+                """)
+            )
+            .format(
+                table=psycopg.sql.Identifier(table),
+                constraint=psycopg.sql.Identifier(constraint),
+            )
+            .as_string(self.conn)
+        )
+
+    def drop_function_if_exists(self, *, function: str) -> None:
+        self.cur.execute(
+            psycopg.sql.SQL("DROP FUNCTION IF EXISTS {function};")
+            .format(function=psycopg.sql.Identifier(function))
+            .as_string(self.conn)
+        )
+
+    def rename_table(self, *, table_from: str, table_to: str) -> None:
+        self.cur.execute(
+            psycopg.sql.SQL("ALTER TABLE {table_from} RENAME TO {table_to};")
+            .format(
+                table_from=psycopg.sql.Identifier(table_from),
+                table_to=psycopg.sql.Identifier(table_to),
+            )
+            .as_string(self.conn)
+        )
+
+    def rename_index(self, *, idx_from: str, idx_to: str) -> None:
+        self.cur.execute(
+            psycopg.sql.SQL("ALTER INDEX {idx_from} RENAME TO {idx_to};")
+            .format(
+                idx_from=psycopg.sql.Identifier(idx_from),
+                idx_to=psycopg.sql.Identifier(idx_to),
+            )
+            .as_string(self.conn)
+        )
+
+    def rename_constraint(self, *, table: str, cons_from: str, cons_to: str) -> None:
+        self.cur.execute(
+            psycopg.sql.SQL(
+                "ALTER TABLE {table} RENAME CONSTRAINT {cons_from} TO {cons_to};"
+            )
+            .format(
+                table=psycopg.sql.Identifier(table),
+                cons_from=psycopg.sql.Identifier(cons_from),
+                cons_to=psycopg.sql.Identifier(cons_to),
+            )
+            .as_string(self.conn)
+        )
