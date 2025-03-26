@@ -1,10 +1,11 @@
 from textwrap import dedent
 
+from . import _cur
 from . import _psycopg as psycopg
 
 
 class Command:
-    def __init__(self, *, conn: psycopg.Connection, cur: psycopg.Cursor) -> None:
+    def __init__(self, *, conn: psycopg.Connection, cur: _cur.LoggedCursor) -> None:
         self.conn = conn
         self.cur = cur
 

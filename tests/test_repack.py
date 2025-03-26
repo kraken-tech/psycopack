@@ -2,7 +2,14 @@ import dataclasses
 
 import pytest
 
-from psycopack import Repack, TableDoesNotExist, TableIsEmpty, _introspect, _psycopg
+from psycopack import (
+    Repack,
+    TableDoesNotExist,
+    TableIsEmpty,
+    _cur,
+    _introspect,
+    _psycopg,
+)
 from tests import factories
 
 
@@ -16,7 +23,9 @@ class _TableInfo:
 
 def _collect_table_info(table: str, connection: _psycopg.Connection) -> _TableInfo:
     with connection.cursor() as cur:
-        introspector = _introspect.Introspector(conn=connection, cur=cur)
+        introspector = _introspect.Introspector(
+            conn=connection, cur=_cur.LoggedCursor(cur=cur)
+        )
         oid = introspector.get_table_oid(table=table)
         assert oid is not None
         indexes = introspector.get_index_def(table=table)
