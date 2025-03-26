@@ -24,7 +24,7 @@
 #     the process.
 from textwrap import dedent
 
-from . import _commands, _identifiers, _introspect
+from . import _commands, _cur, _identifiers, _introspect
 from . import _psycopg as psycopg
 
 
@@ -84,7 +84,7 @@ class Repack:
         cur: psycopg.Cursor,
     ) -> None:
         self.conn = conn
-        self.cur = cur
+        self.cur = _cur.LoggedCursor(cur=cur)
         self.introspector = _introspect.Introspector(conn=self.conn, cur=self.cur)
         self.command = _commands.Command(conn=self.conn, cur=self.cur)
 
