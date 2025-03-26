@@ -47,16 +47,16 @@ class Command:
 
     def drop_sequence_if_exists(self, *, seq: str) -> None:
         self.cur.execute(
-            psycopg.sql.SQL("DROP SEQUENCE IF EXISTS {seq};").format(
-                seq=psycopg.sql.Identifier(seq)
-            )
+            psycopg.sql.SQL("DROP SEQUENCE IF EXISTS {seq};")
+            .format(seq=psycopg.sql.Identifier(seq))
+            .as_string(self.conn)
         )
 
     def create_sequence(self, *, seq: str) -> None:
         self.cur.execute(
-            psycopg.sql.SQL("CREATE SEQUENCE {seq};").format(
-                seq=psycopg.sql.Identifier(seq)
-            )
+            psycopg.sql.SQL("CREATE SEQUENCE {seq};")
+            .format(seq=psycopg.sql.Identifier(seq))
+            .as_string(self.conn)
         )
 
     def set_table_id_seq(self, *, table: str, seq: str) -> None:
@@ -67,10 +67,12 @@ class Command:
                 ALTER COLUMN id
                 SET DEFAULT nextval('{seq}');
                 """)
-            ).format(
+            )
+            .format(
                 table=psycopg.sql.Identifier(table),
                 seq=psycopg.sql.Identifier(seq),
             )
+            .as_string(self.conn)
         )
 
     def add_pk(self, *, table: str) -> None:
