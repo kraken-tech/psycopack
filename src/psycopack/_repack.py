@@ -20,8 +20,6 @@
 # 8. Add mechanisms so that calling Repack.full() is re-entrant and idempotent.
 # 9. Add reasonable lock_timeout values to prevent ACCESS EXCLUSIVE queries
 #    blocking the queue by failing to acquire locks quickly.
-# 10. Add logging, so that the user can see what's happening at each step of
-#     the process.
 from textwrap import dedent
 
 from . import _commands, _cur, _identifiers, _introspect
