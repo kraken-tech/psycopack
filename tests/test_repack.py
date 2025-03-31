@@ -168,6 +168,7 @@ def test_repack_full_after_setup_called(connection: _psycopg.Connection) -> None
             conn=connection,
             cur=cur,
         )
+        repack.pre_validate()
         repack.setup_repacking()
         repack.full()
         table_after = _collect_table_info(table="to_repack", connection=connection)
@@ -201,6 +202,7 @@ def test_repack_full_after_backfill(connection: _psycopg.Connection) -> None:
             conn=connection,
             cur=cur,
         )
+        repack.pre_validate()
         repack.setup_repacking()
         repack.backfill()
         repack.full()
@@ -235,6 +237,7 @@ def test_repack_full_after_sync_schemas_called(connection: _psycopg.Connection) 
             conn=connection,
             cur=cur,
         )
+        repack.pre_validate()
         repack.setup_repacking()
         repack.backfill()
         repack.sync_schemas()
