@@ -146,6 +146,38 @@ def test_when_table_is_empty(connection: _psycopg.Connection) -> None:
             ).full()
 
 
+def test_repack_full_after_pre_validate_called(connection: _psycopg.Connection) -> None:
+    """
+    full() should be able to be called no matter where the repacking process
+    left out from.
+
+    In this case, it will just proceed from the pre_validation step.
+    """
+    with connection.cursor() as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+        )
+        table_before = _collect_table_info(table="to_repack", connection=connection)
+        repack = Repack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+        )
+        repack.pre_validate()
+        repack.full()
+        table_after = _collect_table_info(table="to_repack", connection=connection)
+        _assert_repack(
+            table_before=table_before,
+            table_after=table_after,
+            repack=repack,
+            cur=cur,
+        )
+
+
 def test_repack_full_after_setup_called(connection: _psycopg.Connection) -> None:
     """
     full() should be able to be called no matter where the repacking process
@@ -242,6 +274,78 @@ def test_repack_full_after_sync_schemas_called(connection: _psycopg.Connection) 
         repack.backfill()
         repack.sync_schemas()
         repack.full()
+        table_after = _collect_table_info(table="to_repack", connection=connection)
+        _assert_repack(
+            table_before=table_before,
+            table_after=table_after,
+            repack=repack,
+            cur=cur,
+        )
+
+
+def test_repack_full_after_swap_called(connection: _psycopg.Connection) -> None:
+    """
+    full() should be able to be called no matter where the repacking process
+    left out from.
+
+    In this case, it will pick up from the swap operation, which swaps the copy
+    table for the original and creates a new trigger to keep the original table
+    updated with new inserts into the copy.
+    """
+    with connection.cursor() as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+        )
+        table_before = _collect_table_info(table="to_repack", connection=connection)
+        repack = Repack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+        )
+        repack.pre_validate()
+        repack.setup_repacking()
+        repack.backfill()
+        repack.sync_schemas()
+        repack.swap()
+        repack.full()
+        table_after = _collect_table_info(table="to_repack", connection=connection)
+        _assert_repack(
+            table_before=table_before,
+            table_after=table_after,
+            repack=repack,
+            cur=cur,
+        )
+
+
+def test_clean_up_finishes_the_repacking(connection: _psycopg.Connection) -> None:
+    """
+    The last step on the full() method is to perform a clean_up(). That means
+    that the repacking should be finished up as soon as clean_up() returns.
+    """
+    with connection.cursor() as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+        )
+        table_before = _collect_table_info(table="to_repack", connection=connection)
+        repack = Repack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+        )
+        repack.pre_validate()
+        repack.setup_repacking()
+        repack.backfill()
+        repack.sync_schemas()
+        repack.swap()
+        repack.clean_up()
         table_after = _collect_table_info(table="to_repack", connection=connection)
         _assert_repack(
             table_before=table_before,
