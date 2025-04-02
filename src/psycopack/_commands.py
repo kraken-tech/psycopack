@@ -1,4 +1,7 @@
+import hashlib
+from contextlib import contextmanager
 from textwrap import dedent
+from typing import Iterator
 
 from . import _cur
 from . import _psycopg as psycopg
@@ -197,6 +200,17 @@ class Command:
             )
             .as_string(self.conn)
         )
+
+    @contextmanager
+    def session_lock(self, *, name: str) -> Iterator[None]:
+        # Based on:
+        # https://github.com/Opus10/django-pglock/blob/bf7422d3a74eed8196e13f6b28b72fb0623560e5/pglock/core.py#L137-L139
+        key = int.from_bytes(
+            hashlib.sha256(name.encode("utf-8")).digest()[:8], "little", signed=True
+        )
+        self.cur.execute(f"SELECT pg_advisory_lock({key});")
+        yield
+        self.cur.execute(f"SELECT pg_advisory_unlock({key});")
 
     def populate_backfill_log(
         self,

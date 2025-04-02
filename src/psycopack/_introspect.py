@@ -222,3 +222,20 @@ class Introspector:
         results = self.cur.fetchall()
         assert results is not None
         return [Index(name=name, definition=definition) for name, definition in results]
+
+    def trigger_exists(self, *, trigger: str) -> bool:
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                SELECT
+                  1
+                FROM
+                  pg_trigger
+                WHERE
+                  tgname = {trigger};
+                """)
+            )
+            .format(trigger=psycopg.sql.Literal(trigger))
+            .as_string(self.conn)
+        )
+        return bool(self.cur.fetchone())
