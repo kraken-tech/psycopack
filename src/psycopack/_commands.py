@@ -348,3 +348,9 @@ class Command:
             )
             .as_string(self.conn)
         )
+
+    @contextmanager
+    def db_transaction(self) -> Iterator[None]:
+        self.cur.execute("BEGIN;")
+        yield
+        self.cur.execute("COMMIT;")
