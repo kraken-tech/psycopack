@@ -644,3 +644,86 @@ def test_cannot_skip_order_of_stages(connection: _psycopg.Connection) -> None:
             repack=repack,
             cur=cur,
         )
+
+
+def test_revert_swap_after_swap_called(connection: _psycopg.Connection) -> None:
+    """
+    The revert_swap() routine can only be called immediatelly after swap().
+
+    This routine should leave the repacking status exactly the same way it was
+    before swap() was called.
+    """
+    with connection.cursor() as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+        )
+        table_before = _collect_table_info(table="to_repack", connection=connection)
+        repack = Repack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+        )
+        repack.pre_validate()
+        repack.setup_repacking()
+        repack.backfill()
+        repack.sync_schemas()
+
+        repack.swap()
+        # After the swap, repacking is ready for the clean-up stage.
+        assert repack.tracker.get_current_stage() == _tracker.Stage.CLEAN_UP
+        table_after_swap = _collect_table_info(table="to_repack", connection=connection)
+        assert table_before.oid != table_after_swap.oid
+
+        repack.revert_swap()
+        table_after_revert = _collect_table_info(
+            table="to_repack", connection=connection
+        )
+        assert table_before.oid == table_after_revert.oid
+        # After the revert swap, repacking is ready for the swap stage.
+        assert repack.tracker.get_current_stage() == _tracker.Stage.SWAP
+
+        # We can run swap again now, without any errors.
+        repack.swap()
+
+        # Finally finish the repacking process.
+        repack.full()
+
+        table_after = _collect_table_info(table="to_repack", connection=connection)
+        _assert_repack(
+            table_before=table_before,
+            table_after=table_after,
+            repack=repack,
+            cur=cur,
+        )
+
+
+def test_revert_swap_before_swap_called(connection: _psycopg.Connection) -> None:
+    """
+    The revert_swap() routine can only be called immediatelly after swap().
+
+    This test tries to call revert_swap() _before_ swap() has been called,
+    which is wrong.
+    """
+    with connection.cursor() as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+        )
+        repack = Repack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+        )
+        repack.pre_validate()
+        repack.setup_repacking()
+        repack.backfill()
+
+        with pytest.raises(_tracker.CannotRevertSwap):
+            repack.revert_swap()
