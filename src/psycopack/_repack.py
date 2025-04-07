@@ -65,8 +65,8 @@ class Repack:
         5. swap(): This effectively swaps the tables. The original (now old)
            table will be kept in sync via triggers, in case the swap process
            needs to be reverted.
-        6. [TODO] revert_swap(): Reverts the swap above. Useful if something
-           went wrong.
+        6. revert_swap(): Reverts the swap above. Useful if something went
+           wrong.
         7. clean_up(): Drops the old table. This is non-recoverable. Make
            sure you only call this once you validated the table has been
            repacked adequately.
@@ -410,6 +410,36 @@ class Repack:
                     table_from=self.table,
                     table_to=self.repacked_name,
                 )
+
+    def revert_swap(self) -> None:
+        """
+        After calling swap(), this function can be called if any issues come up
+        to revert back to using the original table instead of the repacked one.
+
+        1. Drop the trigger (and function) that kept the original table in sync
+           with the swapped-in copy.
+        2. Rename the copy table back to its original copy name, and the
+           original table back to its original name.
+        3. Create triggers from the old table to the copy table to keep both in
+           sync.
+        """
+        with self.command.db_transaction():
+            self.tracker._revert_swap()
+            self.cur.execute(f"LOCK TABLE {self.table} IN ACCESS EXCLUSIVE MODE;")
+            self.cur.execute(
+                f"LOCK TABLE {self.repacked_name} IN ACCESS EXCLUSIVE MODE;"
+            )
+            self.command.drop_trigger_if_exists(
+                table=self.table,
+                trigger=self.repacked_trigger,
+            )
+            self.command.drop_function_if_exists(function=self.repacked_function)
+            self.command.rename_table(table_from=self.table, table_to=self.copy_table)
+            self.command.rename_table(
+                table_from=self.repacked_name, table_to=self.table
+            )
+            self._create_copy_function()
+            self._create_copy_trigger()
 
     def clean_up(self) -> None:
         with self.tracker.track(_tracker.Stage.CLEAN_UP):
