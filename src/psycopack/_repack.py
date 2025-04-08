@@ -17,14 +17,11 @@
 #    certain field. TODO: Investigate if doing it the "repack" way is better in
 #    such cases.
 # 7. Add reasonable lock timeouts for operations and failure->retry routines.
-# 8. Add mechanisms so that calling Repack.full() is re-entrant and idempotent.
-# 9. Add reasonable lock_timeout values to prevent ACCESS EXCLUSIVE queries
+# 8. Add reasonable lock_timeout values to prevent ACCESS EXCLUSIVE queries
 #    blocking the queue by failing to acquire locks quickly.
-# 10. Add logging, so that the user can see what's happening at each step of
-#     the process.
 from textwrap import dedent
 
-from . import _commands, _cur, _identifiers, _introspect
+from . import _commands, _cur, _identifiers, _introspect, _tracker
 from . import _psycopg as psycopg
 
 
@@ -103,36 +100,78 @@ class Repack:
         self.repacked_function = self.function.replace("repack", "repacked")
         self.repacked_trigger = self.trigger.replace("repack", "repacked")
 
+        self.tracker = _tracker.Tracker(
+            table=self.table,
+            conn=self.conn,
+            cur=self.cur,
+            copy_table=self.copy_table,
+            trigger=self.trigger,
+            backfill_log=self.backfill_log,
+            repacked_name=self.repacked_name,
+            repacked_trigger=self.repacked_trigger,
+        )
+
     def full(self) -> None:
         """
         Process a full table repack from beginning to end.
         """
-        self.pre_validate()
-        self.setup_repacking()
-        self.backfill()
-        self.sync_schemas()
-        self.swap()
-        self.clean_up()
+        stage = self.tracker.get_current_stage()
+        if stage == _tracker.Stage.PRE_VALIDATION:
+            self.pre_validate()
+            self.setup_repacking()
+            self.backfill()
+            self.sync_schemas()
+            self.swap()
+            self.clean_up()
+
+        if stage == _tracker.Stage.SETUP:
+            self.setup_repacking()
+            self.backfill()
+            self.sync_schemas()
+            self.swap()
+            self.clean_up()
+
+        if stage == _tracker.Stage.BACKFILL:
+            self.backfill()
+            self.sync_schemas()
+            self.swap()
+            self.clean_up()
+
+        if stage == _tracker.Stage.SYNC_SCHEMAS:
+            self.sync_schemas()
+            self.swap()
+            self.clean_up()
+
+        if stage == _tracker.Stage.SWAP:
+            self.swap()
+            self.clean_up()
+
+        if stage == _tracker.Stage.CLEAN_UP:
+            self.clean_up()
 
     def pre_validate(self) -> None:
-        if self.introspector.table_is_empty(table=self.table):
-            raise TableIsEmpty("No reason to repack an empty table.")
+        with self.tracker.track(_tracker.Stage.PRE_VALIDATION):
+            if self.introspector.table_is_empty(table=self.table):
+                raise TableIsEmpty("No reason to repack an empty table.")
 
     def setup_repacking(self) -> None:
-        self._create_copy_table()
-        self._create_copy_function()
-        self._create_copy_trigger()
-        self._create_backfill_log()
-        self._populate_backfill_log()
+        with self.tracker.track(_tracker.Stage.SETUP):
+            self._create_copy_table()
+            self._create_copy_function()
+            self._create_copy_trigger()
+            self._create_backfill_log()
+            self._populate_backfill_log()
 
     def backfill(self) -> None:
-        self._perform_backfill()
+        with self.tracker.track(_tracker.Stage.BACKFILL):
+            self._perform_backfill()
 
     def sync_schemas(self) -> None:
-        self._create_indexes()
-        self._create_unique_constraints()
-        self._create_check_and_fk_constraints()
-        self._create_referring_fks()
+        with self.tracker.track(_tracker.Stage.SYNC_SCHEMAS):
+            self._create_indexes()
+            self._create_unique_constraints()
+            self._create_check_and_fk_constraints()
+            self._create_referring_fks()
 
     def _create_copy_table(self) -> None:
         # Checks if other relating objects have FKs pointing to the copy table
@@ -342,89 +381,95 @@ class Repack:
         3. Create triggers from the new table to the old table to keep
            both in sync, in case the changes need to be reverted.
         """
-        self.cur.execute("BEGIN;")
-        self.cur.execute(f"LOCK TABLE {self.table} IN ACCESS EXCLUSIVE MODE;")
-        self.cur.execute(f"LOCK TABLE {self.copy_table} IN ACCESS EXCLUSIVE MODE;")
-        self.command.drop_trigger_if_exists(table=self.table, trigger=self.trigger)
-        self.command.drop_function_if_exists(function=self.function)
-        self.command.rename_table(table_from=self.table, table_to=self.repacked_name)
-        self.command.rename_table(table_from=self.copy_table, table_to=self.table)
-        self.command.create_copy_function(
-            function=self.repacked_function,
-            table_from=self.table,
-            table_to=self.repacked_name,
-            columns=self.introspector.get_table_columns(table=self.table),
-        )
-        self.command.drop_trigger_if_exists(
-            table=self.table, trigger=self.repacked_trigger
-        )
-        self.command.create_copy_trigger(
-            trigger_name=self.repacked_trigger,
-            function=self.repacked_function,
-            table_from=self.table,
-            table_to=self.repacked_name,
-        )
-        self.cur.execute("COMMIT;")
+        with self.tracker.track(_tracker.Stage.SWAP):
+            self.cur.execute("BEGIN;")
+            self.cur.execute(f"LOCK TABLE {self.table} IN ACCESS EXCLUSIVE MODE;")
+            self.cur.execute(f"LOCK TABLE {self.copy_table} IN ACCESS EXCLUSIVE MODE;")
+            self.command.drop_trigger_if_exists(table=self.table, trigger=self.trigger)
+            self.command.drop_function_if_exists(function=self.function)
+            self.command.rename_table(
+                table_from=self.table, table_to=self.repacked_name
+            )
+            self.command.rename_table(table_from=self.copy_table, table_to=self.table)
+            self.command.create_copy_function(
+                function=self.repacked_function,
+                table_from=self.table,
+                table_to=self.repacked_name,
+                columns=self.introspector.get_table_columns(table=self.table),
+            )
+            self.command.drop_trigger_if_exists(
+                table=self.table, trigger=self.repacked_trigger
+            )
+            self.command.create_copy_trigger(
+                trigger_name=self.repacked_trigger,
+                function=self.repacked_function,
+                table_from=self.table,
+                table_to=self.repacked_name,
+            )
+            self.cur.execute("COMMIT;")
 
     def clean_up(self) -> None:
-        self.command.drop_trigger_if_exists(
-            table=self.table, trigger=self.repacked_trigger
-        )
-        self.command.drop_function_if_exists(function=self.repacked_function)
-
-        # Rename indexes using a dict data structure to hold names from/to.
-        indexes: dict[str, dict[str, str]] = {}
-        for idx in self.introspector.get_index_def(table=self.repacked_name):
-            sql = idx.definition
-            sql_arr = sql.split(" ON")
-            sql = sql_arr[1].replace(self.repacked_name, self.table)
-            indexes[sql] = {"idx_from": idx.name}
-
-        for idx in self.introspector.get_index_def(table=self.table):
-            sql = idx.definition
-            sql_arr = sql.split(" ON")
-            sql = sql_arr[1]
-            indexes[sql]["idx_to"] = idx.name
-
-        for idx_sql in indexes:
-            index_data = indexes[idx_sql]
-            self.command.rename_index(
-                idx_from=index_data["idx_from"],
-                idx_to=_identifiers.build_postgres_identifier(
-                    [index_data["idx_from"]], "idx_from"
-                ),
+        with self.tracker.track(_tracker.Stage.CLEAN_UP):
+            self.command.drop_trigger_if_exists(
+                table=self.table, trigger=self.repacked_trigger
             )
-            self.command.rename_index(
-                idx_from=index_data["idx_to"],
-                idx_to=index_data["idx_from"],
-            )
+            self.command.drop_function_if_exists(function=self.repacked_function)
 
-        # Rename foreign keys from other tables using a dict data structure to
-        # hold names from/to.
-        table_to_fk: dict[str, dict[str, str]] = {}
-        for fk in self.introspector.get_referring_fks(table=self.repacked_name):
-            table_to_fk[fk.referring_table] = {"cons_from": fk.name}
+            # Rename indexes using a dict data structure to hold names from/to.
+            indexes: dict[str, dict[str, str]] = {}
+            for idx in self.introspector.get_index_def(table=self.repacked_name):
+                sql = idx.definition
+                sql_arr = sql.split(" ON")
+                sql = sql_arr[1].replace(self.repacked_name, self.table)
+                indexes[sql] = {"idx_from": idx.name}
 
-        for fk in self.introspector.get_referring_fks(table=self.table):
-            table_to_fk[fk.referring_table]["cons_to"] = fk.name
+            for idx in self.introspector.get_index_def(table=self.table):
+                sql = idx.definition
+                sql_arr = sql.split(" ON")
+                sql = sql_arr[1]
+                indexes[sql]["idx_to"] = idx.name
 
-        for table in table_to_fk:
-            fk_data = table_to_fk[table]
-            self.command.rename_constraint(
-                table=table,
-                cons_from=fk_data["cons_from"],
-                cons_to=_identifiers.build_postgres_identifier(
-                    [fk_data["cons_from"]], "const_from"
-                ),
-            )
-            self.command.rename_constraint(
-                table=table,
-                cons_from=fk_data["cons_to"],
-                cons_to=fk_data["cons_from"],
-            )
+            for idx_sql in indexes:
+                index_data = indexes[idx_sql]
+                self.command.rename_index(
+                    idx_from=index_data["idx_from"],
+                    idx_to=_identifiers.build_postgres_identifier(
+                        [index_data["idx_from"]], "idx_from"
+                    ),
+                )
+                self.command.rename_index(
+                    idx_from=index_data["idx_to"],
+                    idx_to=index_data["idx_from"],
+                )
 
-        for fk in self.introspector.get_referring_fks(table=self.repacked_name):
-            self.command.drop_constraint(table=fk.referring_table, constraint=fk.name)
+            # Rename foreign keys from other tables using a dict data structure to
+            # hold names from/to.
+            table_to_fk: dict[str, dict[str, str]] = {}
+            for fk in self.introspector.get_referring_fks(table=self.repacked_name):
+                table_to_fk[fk.referring_table] = {"cons_from": fk.name}
 
-        self.command.drop_table_if_exists(table=self.repacked_name)
-        self.command.drop_table_if_exists(table=self.backfill_log)
+            for fk in self.introspector.get_referring_fks(table=self.table):
+                table_to_fk[fk.referring_table]["cons_to"] = fk.name
+
+            for table in table_to_fk:
+                fk_data = table_to_fk[table]
+                self.command.rename_constraint(
+                    table=table,
+                    cons_from=fk_data["cons_from"],
+                    cons_to=_identifiers.build_postgres_identifier(
+                        [fk_data["cons_from"]], "const_from"
+                    ),
+                )
+                self.command.rename_constraint(
+                    table=table,
+                    cons_from=fk_data["cons_to"],
+                    cons_to=fk_data["cons_from"],
+                )
+
+            for fk in self.introspector.get_referring_fks(table=self.repacked_name):
+                self.command.drop_constraint(
+                    table=fk.referring_table, constraint=fk.name
+                )
+
+            self.command.drop_table_if_exists(table=self.repacked_name)
+            self.command.drop_table_if_exists(table=self.backfill_log)

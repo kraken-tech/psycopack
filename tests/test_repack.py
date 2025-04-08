@@ -9,6 +9,7 @@ from psycopack import (
     _cur,
     _introspect,
     _psycopg,
+    _tracker,
 )
 from tests import factories
 
@@ -96,6 +97,9 @@ def _assert_repack(
     assert function_info.function_exists is False
     assert function_info.repacked_function_exists is False
 
+    # The tracker table itself will also be deleted after the clean up process.
+    assert repack.introspector.get_table_oid(table=repack.tracker.tracker_table) is None
+
 
 def test_repack_full(connection: _psycopg.Connection) -> None:
     with connection.cursor() as cur:
@@ -146,6 +150,38 @@ def test_when_table_is_empty(connection: _psycopg.Connection) -> None:
             ).full()
 
 
+def test_repack_full_after_pre_validate_called(connection: _psycopg.Connection) -> None:
+    """
+    full() should be able to be called no matter where the repacking process
+    left out from.
+
+    In this case, it will just proceed from the pre_validation step.
+    """
+    with connection.cursor() as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+        )
+        table_before = _collect_table_info(table="to_repack", connection=connection)
+        repack = Repack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+        )
+        repack.pre_validate()
+        repack.full()
+        table_after = _collect_table_info(table="to_repack", connection=connection)
+        _assert_repack(
+            table_before=table_before,
+            table_after=table_after,
+            repack=repack,
+            cur=cur,
+        )
+
+
 def test_repack_full_after_setup_called(connection: _psycopg.Connection) -> None:
     """
     full() should be able to be called no matter where the repacking process
@@ -168,7 +204,10 @@ def test_repack_full_after_setup_called(connection: _psycopg.Connection) -> None
             conn=connection,
             cur=cur,
         )
+        repack.pre_validate()
         repack.setup_repacking()
+        # Setup finished. Next stage is backfill.
+        assert repack.tracker.get_current_stage() == _tracker.Stage.BACKFILL
         repack.full()
         table_after = _collect_table_info(table="to_repack", connection=connection)
         _assert_repack(
@@ -201,8 +240,11 @@ def test_repack_full_after_backfill(connection: _psycopg.Connection) -> None:
             conn=connection,
             cur=cur,
         )
+        repack.pre_validate()
         repack.setup_repacking()
         repack.backfill()
+        # Backfill finished. Next stage is sync_schemas.
+        assert repack.tracker.get_current_stage() == _tracker.Stage.SYNC_SCHEMAS
         repack.full()
         table_after = _collect_table_info(table="to_repack", connection=connection)
         _assert_repack(
@@ -235,10 +277,366 @@ def test_repack_full_after_sync_schemas_called(connection: _psycopg.Connection) 
             conn=connection,
             cur=cur,
         )
+        repack.pre_validate()
         repack.setup_repacking()
         repack.backfill()
         repack.sync_schemas()
+        # Sync schemas finished. Next stage is swap.
+        assert repack.tracker.get_current_stage() == _tracker.Stage.SWAP
         repack.full()
+        table_after = _collect_table_info(table="to_repack", connection=connection)
+        _assert_repack(
+            table_before=table_before,
+            table_after=table_after,
+            repack=repack,
+            cur=cur,
+        )
+
+
+def test_repack_full_after_swap_called(connection: _psycopg.Connection) -> None:
+    """
+    full() should be able to be called no matter where the repacking process
+    left out from.
+
+    In this case, it will pick up from the swap operation, which swaps the copy
+    table for the original and creates a new trigger to keep the original table
+    updated with new inserts into the copy.
+    """
+    with connection.cursor() as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+        )
+        table_before = _collect_table_info(table="to_repack", connection=connection)
+        repack = Repack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+        )
+        repack.pre_validate()
+        repack.setup_repacking()
+        repack.backfill()
+        repack.sync_schemas()
+        repack.swap()
+        # Swap finished. Next stage is clean up.
+        assert repack.tracker.get_current_stage() == _tracker.Stage.CLEAN_UP
+        repack.full()
+        table_after = _collect_table_info(table="to_repack", connection=connection)
+        _assert_repack(
+            table_before=table_before,
+            table_after=table_after,
+            repack=repack,
+            cur=cur,
+        )
+
+
+def test_clean_up_finishes_the_repacking(connection: _psycopg.Connection) -> None:
+    """
+    The last step on the full() method is to perform a clean_up(). That means
+    that the repacking should be finished up as soon as clean_up() returns.
+    """
+    with connection.cursor() as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+        )
+        table_before = _collect_table_info(table="to_repack", connection=connection)
+        repack = Repack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+        )
+        repack.pre_validate()
+        repack.setup_repacking()
+        repack.backfill()
+        repack.sync_schemas()
+        repack.swap()
+        repack.clean_up()
+        table_after = _collect_table_info(table="to_repack", connection=connection)
+        _assert_repack(
+            table_before=table_before,
+            table_after=table_after,
+            repack=repack,
+            cur=cur,
+        )
+
+
+def test_when_tracker_removed_after_sync_schemas(
+    connection: _psycopg.Connection,
+) -> None:
+    with connection.cursor() as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+        )
+        table_before = _collect_table_info(table="to_repack", connection=connection)
+        repack = Repack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+        )
+
+        repack.pre_validate()
+        repack.setup_repacking()
+        repack.backfill()
+        repack.sync_schemas()
+        assert repack.tracker.get_current_stage() == _tracker.Stage.SWAP
+
+        # Deleting the tracker table will remove the ability to pick up the
+        # repacking process where it left. But nonetheless, it should resume
+        # happily from scratch.
+        repack.command.drop_table_if_exists(table=repack.tracker.tracker_table)
+
+        repack.full()
+        table_after = _collect_table_info(table="to_repack", connection=connection)
+        _assert_repack(
+            table_before=table_before,
+            table_after=table_after,
+            repack=repack,
+            cur=cur,
+        )
+
+
+def test_when_tracker_table_current_row_is_deleted(
+    connection: _psycopg.Connection,
+) -> None:
+    """
+    A sane error must be returned and the repacking process must be stopped if
+    the tracker table has been manipulated.
+
+    In this case, the row containing the current stage has been deleted
+    manually.
+    """
+    with connection.cursor() as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+        )
+        repack = Repack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+        )
+
+        repack.pre_validate()
+        repack.setup_repacking()
+        assert repack.tracker.get_current_stage() == _tracker.Stage.BACKFILL
+
+        cur.execute(
+            f"DELETE FROM {repack.tracker.tracker_table} WHERE stage = 'BACKFILL';"
+        )
+        with pytest.raises(_tracker.CannotFindUnfinishedStage):
+            repack.full()
+
+
+def test_when_rogue_row_inserted_in_tracker_table(
+    connection: _psycopg.Connection,
+) -> None:
+    """
+    A sane error must be returned and the repacking process must be stopped if
+    the tracker table has been manipulated.
+
+    In this case, a new row that shouldn't be there has been inserted into the
+    table manually.
+    """
+    with connection.cursor() as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+        )
+        repack = Repack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+        )
+
+        repack.pre_validate()
+        repack.setup_repacking()
+        assert repack.tracker.get_current_stage() == _tracker.Stage.BACKFILL
+
+        cur.execute(
+            _psycopg.sql.SQL(
+                """
+                INSERT INTO
+                  {table} (stage, step, started_at, finished_at)
+                VALUES
+                  ({stage}, {step}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+                """
+            )
+            .format(
+                table=_psycopg.sql.Identifier(repack.tracker.tracker_table),
+                stage=_psycopg.sql.Literal("A stage that doesn't exist"),
+                step=_psycopg.sql.Literal(42),
+            )
+            .as_string(connection)
+        )
+        with pytest.raises(_tracker.InvalidRowInTrackerTable):
+            repack.full()
+
+
+def test_table_to_repack_deleted_after_pre_validation(
+    connection: _psycopg.Connection,
+) -> None:
+    with connection.cursor() as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+        )
+        repack = Repack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+        )
+
+        repack.pre_validate()
+        assert repack.tracker.get_current_stage() == _tracker.Stage.SETUP
+
+        cur.execute("DROP TABLE to_repack CASCADE;")
+        with pytest.raises(_tracker.TableDoesNotExist):
+            repack.full()
+
+
+def test_trigger_deleted_after_setup(connection: _psycopg.Connection) -> None:
+    with connection.cursor() as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+        )
+        repack = Repack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+        )
+        repack.pre_validate()
+        repack.setup_repacking()
+        assert repack.tracker.get_current_stage() == _tracker.Stage.BACKFILL
+
+        repack.command.drop_trigger_if_exists(
+            table=repack.table, trigger=repack.trigger
+        )
+        with pytest.raises(_tracker.TriggerDoesNotExist):
+            repack.full()
+
+
+def test_cannot_repeat_finished_stage(connection: _psycopg.Connection) -> None:
+    with connection.cursor() as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+        )
+        table_before = _collect_table_info(table="to_repack", connection=connection)
+        repack = Repack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+        )
+        repack.pre_validate()
+        with pytest.raises(_tracker.StageAlreadyFinished):
+            repack.pre_validate()
+
+        repack.setup_repacking()
+        with pytest.raises(_tracker.StageAlreadyFinished):
+            repack.setup_repacking()
+
+        repack.backfill()
+        with pytest.raises(_tracker.StageAlreadyFinished):
+            repack.backfill()
+
+        repack.sync_schemas()
+        with pytest.raises(_tracker.StageAlreadyFinished):
+            repack.sync_schemas()
+
+        repack.swap()
+        with pytest.raises(_tracker.StageAlreadyFinished):
+            repack.swap()
+
+        repack.clean_up()
+        with pytest.raises(_tracker.InvalidRepackingSetup):
+            # The clean up process above already deleted all repacking
+            # relations, including the tracker table. So trying to call it
+            # again indicates trying to start repacking from scratch straight
+            # from the clean up stage, which is invalid.
+            repack.clean_up()
+
+        table_after = _collect_table_info(table="to_repack", connection=connection)
+        _assert_repack(
+            table_before=table_before,
+            table_after=table_after,
+            repack=repack,
+            cur=cur,
+        )
+
+
+def test_cannot_skip_order_of_stages(connection: _psycopg.Connection) -> None:
+    with connection.cursor() as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+        )
+        table_before = _collect_table_info(table="to_repack", connection=connection)
+        repack = Repack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+        )
+        with pytest.raises(_tracker.InvalidRepackingSetup):
+            # Can't initialise a repacking without going through pre-validation
+            # first.
+            repack.setup_repacking()
+
+        repack.pre_validate()
+
+        with pytest.raises(_tracker.InvalidRepackingStep):
+            # Can't go to backfill without setting up first.
+            repack.backfill()
+
+        repack.setup_repacking()
+
+        with pytest.raises(_tracker.InvalidRepackingStep):
+            # Can't go to sync schemas without backfilling first
+            repack.sync_schemas()
+
+        repack.backfill()
+
+        with pytest.raises(_tracker.InvalidRepackingStep):
+            # Can't go to swap without syncing schemas first.
+            repack.swap()
+
+        repack.sync_schemas()
+        with pytest.raises(_tracker.InvalidRepackingStep):
+            # Can't go to clean up without swapping first.
+            repack.clean_up()
+
+        repack.swap()
+        repack.clean_up()
+
         table_after = _collect_table_info(table="to_repack", connection=connection)
         _assert_repack(
             table_before=table_before,
