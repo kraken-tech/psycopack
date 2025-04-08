@@ -65,8 +65,8 @@ class Repack:
         5. swap(): This effectively swaps the tables. The original (now old)
            table will be kept in sync via triggers, in case the swap process
            needs to be reverted.
-        6. [TODO] revert_swap(): Reverts the swap above. Useful if something
-           went wrong.
+        6. revert_swap(): Reverts the swap above. Useful if something went
+           wrong.
         7. clean_up(): Drops the old table. This is non-recoverable. Make
            sure you only call this once you validated the table has been
            repacked adequately.
@@ -239,58 +239,56 @@ class Repack:
         # TODO: This can be distributed across many workers instead of being
         # an infinite single-threaded loop.
         while True:
-            self.cur.execute("BEGIN;")
-            self.cur.execute(
-                psycopg.sql.SQL(
-                    dedent("""
-                    SELECT
-                      id, batch_start, batch_end
-                    FROM
-                      {backfill_log}
-                    WHERE
-                      finished IS false
-                    FOR UPDATE SKIP LOCKED
-                    LIMIT 1;
-                    """)
+            with self.command.db_transaction():
+                self.cur.execute(
+                    psycopg.sql.SQL(
+                        dedent("""
+                        SELECT
+                          id, batch_start, batch_end
+                        FROM
+                          {backfill_log}
+                        WHERE
+                          finished IS false
+                        FOR UPDATE SKIP LOCKED
+                        LIMIT 1;
+                        """)
+                    )
+                    .format(backfill_log=psycopg.sql.Identifier(self.backfill_log))
+                    .as_string(self.conn)
                 )
-                .format(backfill_log=psycopg.sql.Identifier(self.backfill_log))
-                .as_string(self.conn)
-            )
-            result = self.cur.fetchone()
+                result = self.cur.fetchone()
 
-            if not result:
-                self.cur.execute("ABORT;")
-                # No batches available to process at present.
-                break
+                if not result:
+                    # No batches available to process at present.
+                    break
 
-            id, batch_start, batch_end = result
-            self.cur.execute(
-                psycopg.sql.SQL("SELECT {function}({batch_start}, {batch_end});")
-                .format(
-                    function=psycopg.sql.Identifier(self.function),
-                    batch_start=psycopg.sql.Literal(batch_start),
-                    batch_end=psycopg.sql.Literal(batch_end),
+                id, batch_start, batch_end = result
+                self.cur.execute(
+                    psycopg.sql.SQL("SELECT {function}({batch_start}, {batch_end});")
+                    .format(
+                        function=psycopg.sql.Identifier(self.function),
+                        batch_start=psycopg.sql.Literal(batch_start),
+                        batch_end=psycopg.sql.Literal(batch_end),
+                    )
+                    .as_string(self.conn)
                 )
-                .as_string(self.conn)
-            )
-            self.cur.execute(
-                psycopg.sql.SQL(
-                    dedent("""
-                    UPDATE
-                      {backfill_log}
-                    SET
-                      finished = true
-                    WHERE
-                      id = {id};
-                    """)
+                self.cur.execute(
+                    psycopg.sql.SQL(
+                        dedent("""
+                        UPDATE
+                          {backfill_log}
+                        SET
+                          finished = true
+                        WHERE
+                          id = {id};
+                        """)
+                    )
+                    .format(
+                        backfill_log=psycopg.sql.Identifier(self.backfill_log),
+                        id=psycopg.sql.Literal(id),
+                    )
+                    .as_string(self.conn)
                 )
-                .format(
-                    backfill_log=psycopg.sql.Identifier(self.backfill_log),
-                    id=psycopg.sql.Literal(id),
-                )
-                .as_string(self.conn)
-            )
-            self.cur.execute("COMMIT;")
 
     def _create_indexes(self) -> None:
         # We already created a PK index when creating the copy table, so we'll
@@ -382,31 +380,66 @@ class Repack:
            both in sync, in case the changes need to be reverted.
         """
         with self.tracker.track(_tracker.Stage.SWAP):
-            self.cur.execute("BEGIN;")
+            with self.command.db_transaction():
+                self.cur.execute(f"LOCK TABLE {self.table} IN ACCESS EXCLUSIVE MODE;")
+                self.cur.execute(
+                    f"LOCK TABLE {self.copy_table} IN ACCESS EXCLUSIVE MODE;"
+                )
+                self.command.drop_trigger_if_exists(
+                    table=self.table, trigger=self.trigger
+                )
+                self.command.drop_function_if_exists(function=self.function)
+                self.command.rename_table(
+                    table_from=self.table, table_to=self.repacked_name
+                )
+                self.command.rename_table(
+                    table_from=self.copy_table, table_to=self.table
+                )
+                self.command.create_copy_function(
+                    function=self.repacked_function,
+                    table_from=self.table,
+                    table_to=self.repacked_name,
+                    columns=self.introspector.get_table_columns(table=self.table),
+                )
+                self.command.drop_trigger_if_exists(
+                    table=self.table, trigger=self.repacked_trigger
+                )
+                self.command.create_copy_trigger(
+                    trigger_name=self.repacked_trigger,
+                    function=self.repacked_function,
+                    table_from=self.table,
+                    table_to=self.repacked_name,
+                )
+
+    def revert_swap(self) -> None:
+        """
+        After calling swap(), this function can be called if any issues come up
+        to revert back to using the original table instead of the repacked one.
+
+        1. Drop the trigger (and function) that kept the original table in sync
+           with the swapped-in copy.
+        2. Rename the copy table back to its original copy name, and the
+           original table back to its original name.
+        3. Create triggers from the old table to the copy table to keep both in
+           sync.
+        """
+        with self.command.db_transaction():
+            self.tracker._revert_swap()
             self.cur.execute(f"LOCK TABLE {self.table} IN ACCESS EXCLUSIVE MODE;")
-            self.cur.execute(f"LOCK TABLE {self.copy_table} IN ACCESS EXCLUSIVE MODE;")
-            self.command.drop_trigger_if_exists(table=self.table, trigger=self.trigger)
-            self.command.drop_function_if_exists(function=self.function)
-            self.command.rename_table(
-                table_from=self.table, table_to=self.repacked_name
-            )
-            self.command.rename_table(table_from=self.copy_table, table_to=self.table)
-            self.command.create_copy_function(
-                function=self.repacked_function,
-                table_from=self.table,
-                table_to=self.repacked_name,
-                columns=self.introspector.get_table_columns(table=self.table),
+            self.cur.execute(
+                f"LOCK TABLE {self.repacked_name} IN ACCESS EXCLUSIVE MODE;"
             )
             self.command.drop_trigger_if_exists(
-                table=self.table, trigger=self.repacked_trigger
+                table=self.table,
+                trigger=self.repacked_trigger,
             )
-            self.command.create_copy_trigger(
-                trigger_name=self.repacked_trigger,
-                function=self.repacked_function,
-                table_from=self.table,
-                table_to=self.repacked_name,
+            self.command.drop_function_if_exists(function=self.repacked_function)
+            self.command.rename_table(table_from=self.table, table_to=self.copy_table)
+            self.command.rename_table(
+                table_from=self.repacked_name, table_to=self.table
             )
-            self.cur.execute("COMMIT;")
+            self._create_copy_function()
+            self._create_copy_trigger()
 
     def clean_up(self) -> None:
         with self.tracker.track(_tracker.Stage.CLEAN_UP):

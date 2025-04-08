@@ -40,6 +40,10 @@ class InvalidRepackingStep(TrackerException):
     pass
 
 
+class CannotRevertSwap(TrackerException):
+    pass
+
+
 @dataclasses.dataclass
 class StageInfo:
     name: str
@@ -381,6 +385,50 @@ class Tracker:
                 table=psycopg.sql.Identifier(self.tracker_table),
                 stage=psycopg.sql.Literal(stage),
                 step=psycopg.sql.Literal(step),
+            )
+            .as_string(self.conn)
+        )
+
+    def _revert_swap(self) -> None:
+        with self.command.session_lock(name=self.tracker_lock):
+            current_stage = self.get_current_stage()
+            if current_stage != Stage.CLEAN_UP:
+                raise CannotRevertSwap(
+                    "Can only revert if a swap was the last completed repacking stage."
+                )
+
+            self._delete_current_stage()
+            self._reset_stage_finished_at(stage=Stage.SWAP)
+
+    def _delete_current_stage(self) -> None:
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                DELETE FROM
+                  {table}
+                WHERE
+                  finished_at is NULL;
+                """)
+            )
+            .format(table=psycopg.sql.Identifier(self.tracker_table))
+            .as_string(self.conn)
+        )
+
+    def _reset_stage_finished_at(self, *, stage: Stage) -> None:
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                UPDATE
+                  {table}
+                SET
+                  finished_at = NULL
+                WHERE
+                  stage = {stage};
+                """)
+            )
+            .format(
+                table=psycopg.sql.Identifier(self.tracker_table),
+                stage=psycopg.sql.Literal(stage.value.name),
             )
             .as_string(self.conn)
         )
