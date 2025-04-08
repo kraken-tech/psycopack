@@ -33,7 +33,7 @@ test:
 .PHONY:coverage_run
 coverage_run:
 	coverage run --branch \
-	--include=src/psycopack/* \
+	--include=src/psycopack/*,tests/* \
 	--data-file=$(COVERAGE_FILE) \
 	-m pytest
 

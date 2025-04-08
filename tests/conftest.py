@@ -17,7 +17,7 @@ DATABASE_NAME = os.getenv("DATABASE_NAME", "test_psycopack")
 def connection() -> Generator[psycopg.Connection, None, None]:
     with _conn.get_db_connection(DATABASE_URL) as conn:
         cur = conn.cursor()
-        if not psycopg.PSYCOPG_3:
+        if not psycopg.PSYCOPG_3:  # pragma: no cover
             # https://github.com/psycopg/psycopg2/issues/941#issuecomment-864025101
             # https://github.com/psycopg/psycopg2/issues/1305#issuecomment-866712961
             cur.execute("ABORT")
