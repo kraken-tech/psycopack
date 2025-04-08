@@ -21,7 +21,7 @@
 #    blocking the queue by failing to acquire locks quickly.
 from textwrap import dedent
 
-from . import _commands, _cur, _identifiers, _introspect, _tracker
+from . import _commands, _const, _cur, _identifiers, _introspect, _tracker
 from . import _psycopg as psycopg
 
 
@@ -96,9 +96,15 @@ class Repack:
         self.backfill_log = f"{self.copy_table}_backfill"
 
         # Names after the original table once it has been repacked and swapped.
-        self.repacked_name = self.copy_table.replace("repack", "repacked")
-        self.repacked_function = self.function.replace("repack", "repacked")
-        self.repacked_trigger = self.trigger.replace("repack", "repacked")
+        self.repacked_name = self.copy_table.replace(
+            _const.NAME_PREFIX, _const.REPACKED_NAME_PREFIX
+        )
+        self.repacked_function = self.function.replace(
+            _const.NAME_PREFIX, _const.REPACKED_NAME_PREFIX
+        )
+        self.repacked_trigger = self.trigger.replace(
+            _const.NAME_PREFIX, _const.REPACKED_NAME_PREFIX
+        )
 
         self.tracker = _tracker.Tracker(
             table=self.table,
@@ -202,7 +208,7 @@ class Repack:
         oid = self.introspector.get_table_oid(table=self.table)
         if oid is None:
             raise TableDoesNotExist(f'Table "{self.table}" does not exist.')
-        return f"repack_{oid}"
+        return f"{_const.NAME_PREFIX}_{oid}"
 
     def _create_copy_function(self) -> None:
         self.command.drop_function_if_exists(function=self.function)

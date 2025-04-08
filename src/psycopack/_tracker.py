@@ -4,7 +4,7 @@ from contextlib import contextmanager
 from textwrap import dedent
 from typing import Iterator
 
-from . import _commands, _cur, _introspect
+from . import _commands, _const, _cur, _introspect
 from . import _psycopg as psycopg
 
 
@@ -210,8 +210,8 @@ class Tracker:
     def _get_tracker_table_name(self) -> str:
         # Manipulate the copy_table name directly to avoid an extra
         # introspection query to find the table oid.
-        oid = self.copy_table.split("repack_")[1]
-        return f"repack_{oid}_tracker"
+        oid = self.copy_table.split(f"{_const.NAME_PREFIX}_")[1]
+        return f"{_const.NAME_PREFIX}_{oid}_tracker"
 
     def _tracker_table_exists(self) -> bool:
         return bool(self.introspector.get_table_oid(table=self.tracker_table))
