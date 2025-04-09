@@ -9,6 +9,7 @@ from . import _psycopg as psycopg
 class Index:
     name: str
     definition: str
+    is_primary: bool
 
 
 @dataclasses.dataclass
@@ -86,33 +87,38 @@ class Introspector:
         assert isinstance(max_id, int)
         return min_id, max_id
 
-    def get_non_pk_index_def(self, *, table: str) -> list[Index]:
+    def get_index_def(self, *, table: str) -> list[Index]:
         self.cur.execute(
             psycopg.sql.SQL(
                 dedent("""
                 SELECT
-                  indexname,
-                  indexdef
+                  pg_indexes.indexname,
+                  pg_indexes.indexdef,
+                  pg_index.indisprimary
                 FROM
                   pg_indexes
+                INNER JOIN
+                  pg_class
+                  ON pg_class.relname = pg_indexes.indexname
+                INNER JOIN
+                  pg_index
+                  ON pg_index.indexrelid = pg_class.oid
                 WHERE
-                  tablename = {table}
-                  AND indexname != {pkey_index}
+                  pg_indexes.tablename = {table}
                 ORDER BY
-                  indexname,
-                  indexdef;
+                  pg_indexes.indexname,
+                  pg_indexes.indexdef;
                 """)
             )
-            .format(
-                table=psycopg.sql.Literal(table),
-                # TODO: generalise.
-                pkey_index=psycopg.sql.Literal(f"{table}_pkey"),
-            )
+            .format(table=psycopg.sql.Literal(table))
             .as_string(self.conn)
         )
         results = self.cur.fetchall()
         assert results is not None
-        return [Index(name=name, definition=definition) for name, definition in results]
+        return [
+            Index(name=name, definition=definition, is_primary=is_primary)
+            for name, definition, is_primary in results
+        ]
 
     def get_constraints(self, *, table: str, types: list[str]) -> list[Constraint]:
         self.cur.execute(
@@ -199,29 +205,6 @@ class Introspector:
         result = self.cur.fetchone()
         assert result is not None
         return bool(result[0])
-
-    def get_index_def(self, *, table: str) -> list[Index]:
-        self.cur.execute(
-            psycopg.sql.SQL(
-                dedent("""
-                SELECT
-                  indexname,
-                  indexdef
-                FROM
-                  pg_indexes
-                WHERE
-                  tablename = {table}
-                ORDER BY
-                  indexname,
-                  indexdef;
-                """)
-            )
-            .format(table=psycopg.sql.Literal(table))
-            .as_string(self.conn)
-        )
-        results = self.cur.fetchall()
-        assert results is not None
-        return [Index(name=name, definition=definition) for name, definition in results]
 
     def trigger_exists(self, *, trigger: str) -> bool:
         self.cur.execute(

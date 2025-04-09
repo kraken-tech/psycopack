@@ -299,7 +299,11 @@ class Repack:
     def _create_indexes(self) -> None:
         # We already created a PK index when creating the copy table, so we'll
         # skip it here as it does not need to be recreated.
-        indexes = self.introspector.get_non_pk_index_def(table=self.table)
+        indexes = [
+            index
+            for index in self.introspector.get_index_def(table=self.table)
+            if not index.is_primary
+        ]
         self.cur.execute("SHOW lock_timeout;")
         result = self.cur.fetchone()
         assert result is not None
