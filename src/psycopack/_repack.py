@@ -1,20 +1,17 @@
 # TODO:
-# 1. Tables using inheritance have not been tested and won't be supported for
-#    the MVP. In future, repacking needs to raise an error if an attempt to
-#    repack an inherited table is made.
-# 2. In this PoC I assume the PK columns of the original and copy table are
+# 1. In this PoC I assume the PK columns of the original and copy table are
 #    called "id". In future, repacking to raise an error if this isn't the
 #    case.
-# 3. In this PoC I assume the original table doesn't have triggers to/from.
+# 2. In this PoC I assume the original table doesn't have triggers to/from.
 #    In future, repacking needs to raise an error if this isn't the case.
-# 4. The script doesn't take into consideration which schema the tables live
+# 3. The script doesn't take into consideration which schema the tables live
 #    in. This only works if the default schema (public) is being used. In
 #    future, this needs to be changed.
-# 5. Due to the way the backfilling works, it may affect the correlation of a
+# 4. Due to the way the backfilling works, it may affect the correlation of a
 #    certain field. TODO: Investigate if doing it the "repack" way is better in
 #    such cases.
-# 6. Add reasonable lock timeouts for operations and failure->retry routines.
-# 7. Add reasonable lock_timeout values to prevent ACCESS EXCLUSIVE queries
+# 5. Add reasonable lock timeouts for operations and failure->retry routines.
+# 6. Add reasonable lock_timeout values to prevent ACCESS EXCLUSIVE queries
 #    blocking the queue by failing to acquire locks quickly.
 from textwrap import dedent
 
@@ -31,6 +28,10 @@ class TableDoesNotExist(BaseRepackError):
 
 
 class TableIsEmpty(BaseRepackError):
+    pass
+
+
+class InheritedTable(BaseRepackError):
     pass
 
 
@@ -156,6 +157,9 @@ class Repack:
         with self.tracker.track(_tracker.Stage.PRE_VALIDATION):
             if self.introspector.table_is_empty(table=self.table):
                 raise TableIsEmpty("No reason to repack an empty table.")
+
+            if self.introspector.is_inherited_table(table=self.table):
+                raise InheritedTable("Psycopack does not support inherited tables.")
 
     def setup_repacking(self) -> None:
         with self.tracker.track(_tracker.Stage.SETUP):
