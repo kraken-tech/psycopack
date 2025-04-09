@@ -35,6 +35,10 @@ class InheritedTable(BaseRepackError):
     pass
 
 
+class TableHasTriggers(BaseRepackError):
+    pass
+
+
 class Repack:
     """
     Class for operating a full table repack.
@@ -160,6 +164,22 @@ class Repack:
 
             if self.introspector.is_inherited_table(table=self.table):
                 raise InheritedTable("Psycopack does not support inherited tables.")
+
+            unsupported_triggers = [
+                trigger
+                for trigger in self.introspector.get_triggers(table=self.table)
+                # Filter out any internal triggers that Postgres creates;
+                # usually to enforce constraints, and also filter out the
+                # triggers created by psycopack, as we can handle them
+                # idempotently. If such triggers are present here the user
+                # might have come from an interrupted/erroneous table
+                # repacking.
+                if (not trigger.is_internal and not trigger.is_psycopack_trigger)
+            ]
+            if any(unsupported_triggers):
+                raise TableHasTriggers(
+                    "Psycopack does not support table with triggers."
+                )
 
     def setup_repacking(self) -> None:
         with self.tracker.track(_tracker.Stage.SETUP):

@@ -7,6 +7,7 @@ from ._repack import (
     InheritedTable,
     Repack,
     TableDoesNotExist,
+    TableHasTriggers,
     TableIsEmpty,
 )
 
@@ -16,5 +17,6 @@ __all__ = (
     "InheritedTable",
     "Repack",
     "TableDoesNotExist",
+    "TableHasTriggers",
     "TableIsEmpty",
 )

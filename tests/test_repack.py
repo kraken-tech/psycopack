@@ -6,6 +6,7 @@ from psycopack import (
     InheritedTable,
     Repack,
     TableDoesNotExist,
+    TableHasTriggers,
     TableIsEmpty,
     _cur,
     _introspect,
@@ -780,4 +781,35 @@ def test_repack_with_inherited_table(connection: _psycopg.Connection) -> None:
             cur=cur,
         )
         with pytest.raises(InheritedTable):
+            repack.full()
+
+
+def test_repack_when_table_has_triggers(connection: _psycopg.Connection) -> None:
+    with connection.cursor() as cur:
+        cur.execute("CREATE TABLE table_with_triggers (id SERIAL PRIMARY KEY);")
+        # Insert a row so that the table passes the TableIsEmpty check.
+        cur.execute(
+            "INSERT INTO table_with_triggers (id) SELECT generate_series(1, 1);"
+        )
+        cur.execute("""
+            CREATE OR REPLACE FUNCTION log_insert()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                RAISE NOTICE 'New row inserted with ID: %', NEW.id;
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+
+            CREATE TRIGGER after_insert_trigger
+            AFTER INSERT ON table_with_triggers
+            FOR EACH ROW
+            EXECUTE FUNCTION log_insert();
+        """)
+        repack = Repack(
+            table="table_with_triggers",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+        )
+        with pytest.raises(TableHasTriggers):
             repack.full()
