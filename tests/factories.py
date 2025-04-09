@@ -10,6 +10,7 @@ def create_table_for_repacking(
     rows: int = 100,
     referred_table_rows: int = 10,
     referring_table_rows: int = 10,
+    with_exclusion_constraint: bool = False,
 ) -> None:
     """
     Creates a table to repack (default: "to_repack") that has:
@@ -45,7 +46,8 @@ def create_table_for_repacking(
             var_with_deferred_const VARCHAR(10),
             valid_fk INTEGER REFERENCES referred_table(id),
             not_valid_fk INTEGER,
-            {table_name} INTEGER
+            {table_name} INTEGER,
+            var_maybe_with_exclusion VARCHAR(255)
         );
     """)
     )
@@ -100,6 +102,15 @@ def create_table_for_repacking(
         CHECK ({table_name} > 0);
         """)
     )
+    if with_exclusion_constraint:
+        cur.execute(
+            dedent(f"""
+            ALTER TABLE {table_name}
+            ADD CONSTRAINT exclusion_var
+            EXCLUDE USING BTREE (var_maybe_with_exclusion WITH =);
+            """)
+        )
+
     cur.execute(
         dedent(f"""
         INSERT INTO {table_name} (
@@ -114,7 +125,8 @@ def create_table_for_repacking(
             var_with_deferred_const,
             valid_fk,
             not_valid_fk,
-            {table_name}
+            {table_name},
+            var_maybe_with_exclusion
         )
         SELECT
             substring(md5(random()::text), 1, 10),
@@ -128,7 +140,8 @@ def create_table_for_repacking(
             substring(md5(random()::text), 1, 10),
             (floor(random() * {referred_table_rows}) + 1)::int,
             (floor(random() * {referred_table_rows}) + 1)::int,
-            (floor(random() * 10) + 1)::int
+            (floor(random() * 10) + 1)::int,
+            substring(md5(random()::text), 1, 10)
         FROM generate_series(1, {rows});
     """)
     )

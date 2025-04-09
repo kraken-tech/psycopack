@@ -10,6 +10,7 @@ class Index:
     name: str
     definition: str
     is_primary: bool
+    is_exclusion: bool
 
 
 @dataclasses.dataclass
@@ -94,7 +95,8 @@ class Introspector:
                 SELECT
                   pg_indexes.indexname,
                   pg_indexes.indexdef,
-                  pg_index.indisprimary
+                  pg_index.indisprimary,
+                  pg_index.indisexclusion
                 FROM
                   pg_indexes
                 INNER JOIN
@@ -116,8 +118,13 @@ class Introspector:
         results = self.cur.fetchall()
         assert results is not None
         return [
-            Index(name=name, definition=definition, is_primary=is_primary)
-            for name, definition, is_primary in results
+            Index(
+                name=name,
+                definition=definition,
+                is_primary=is_primary,
+                is_exclusion=is_exclusion,
+            )
+            for name, definition, is_primary, is_exclusion in results
         ]
 
     def get_constraints(self, *, table: str, types: list[str]) -> list[Constraint]:

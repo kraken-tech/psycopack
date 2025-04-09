@@ -727,3 +727,40 @@ def test_revert_swap_before_swap_called(connection: _psycopg.Connection) -> None
 
         with pytest.raises(_tracker.CannotRevertSwap):
             repack.revert_swap()
+
+
+def test_repack_with_exclusion_constraint(connection: _psycopg.Connection) -> None:
+    with connection.cursor() as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+            with_exclusion_constraint=True,
+        )
+        table_before = _collect_table_info(table="to_repack", connection=connection)
+        repack = Repack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+        )
+        repack.pre_validate()
+        repack.setup_repacking()
+        # At this stage, the exclusion constraint is in the copy table.
+        assert (
+            len(
+                repack.introspector.get_constraints(
+                    table=repack.copy_table, types=["x"]
+                )
+            )
+            == 1
+        )
+        repack.full()
+        table_after = _collect_table_info(table="to_repack", connection=connection)
+        _assert_repack(
+            table_before=table_before,
+            table_after=table_after,
+            repack=repack,
+            cur=cur,
+        )

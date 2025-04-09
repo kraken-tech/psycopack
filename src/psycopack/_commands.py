@@ -3,7 +3,7 @@ from contextlib import contextmanager
 from textwrap import dedent
 from typing import Iterator
 
-from . import _cur
+from . import _cur, _introspect
 from . import _psycopg as psycopg
 
 
@@ -11,6 +11,7 @@ class Command:
     def __init__(self, *, conn: psycopg.Connection, cur: _cur.LoggedCursor) -> None:
         self.conn = conn
         self.cur = cur
+        self.introspector = _introspect.Introspector(conn=self.conn, cur=self.cur)
 
     def drop_constraint(self, *, table: str, constraint: str) -> None:
         self.cur.execute(
@@ -345,6 +346,23 @@ class Command:
                 table=psycopg.sql.Identifier(table),
                 cons_from=psycopg.sql.Identifier(cons_from),
                 cons_to=psycopg.sql.Identifier(cons_to),
+            )
+            .as_string(self.conn)
+        )
+
+    def create_constraint(self, *, table: str, name: str, definition: str) -> None:
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                ALTER TABLE {table}
+                ADD CONSTRAINT {constraint}
+                {definition}
+                """)
+            )
+            .format(
+                table=psycopg.sql.Identifier(table),
+                constraint=psycopg.sql.Identifier(name),
+                definition=psycopg.sql.SQL(definition),
             )
             .as_string(self.conn)
         )
