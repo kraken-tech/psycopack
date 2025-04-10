@@ -7,17 +7,14 @@
 #    case.
 # 3. In this PoC I assume the original table doesn't have triggers to/from.
 #    In future, repacking needs to raise an error if this isn't the case.
-# 4. Exclusion constraints must be created before backfilling because they
-#    can't be performed ONLINE. This MVP does not deal with exclusion
-#    constraints yet.
-# 5. The script doesn't take into consideration which schema the tables live
+# 4. The script doesn't take into consideration which schema the tables live
 #    in. This only works if the default schema (public) is being used. In
 #    future, this needs to be changed.
-# 6. Due to the way the backfilling works, it may affect the correlation of a
+# 5. Due to the way the backfilling works, it may affect the correlation of a
 #    certain field. TODO: Investigate if doing it the "repack" way is better in
 #    such cases.
-# 7. Add reasonable lock timeouts for operations and failure->retry routines.
-# 8. Add reasonable lock_timeout values to prevent ACCESS EXCLUSIVE queries
+# 6. Add reasonable lock timeouts for operations and failure->retry routines.
+# 7. Add reasonable lock_timeout values to prevent ACCESS EXCLUSIVE queries
 #    blocking the queue by failing to acquire locks quickly.
 from textwrap import dedent
 
@@ -204,6 +201,26 @@ class Repack:
         # triggers to perform index lookups when writing to the table.
         self.command.add_pk(table=self.copy_table)
 
+        # If the original table has exclusion constraints, they need to be
+        # replicated here when setting up the copy table. This is a limitation
+        # from Postgres, as there is no way to create an exclusion constraint
+        # ONLINE later when syncing the copy schema with the original table.
+        exclusion_constraints = self.introspector.get_constraints(
+            table=self.table,
+            types=["x"],
+        )
+        for constraint in exclusion_constraints:
+            self.command.create_constraint(
+                table=self.copy_table,
+                # Exclusion constraints are backed up by indexes, and because
+                # indexes must have unique names, we need to name the exclusion
+                # constraint with a temporary name here.
+                name=_identifiers.build_postgres_identifier(
+                    [constraint.name], "psycopack"
+                ),
+                definition=constraint.definition,
+            )
+
     def _get_copy_table_name(self) -> str:
         oid = self.introspector.get_table_oid(table=self.table)
         if oid is None:
@@ -298,8 +315,13 @@ class Repack:
 
     def _create_indexes(self) -> None:
         # We already created a PK index when creating the copy table, so we'll
-        # skip it here as it does not need to be recreated.
-        indexes = self.introspector.get_non_pk_index_def(table=self.table)
+        # skip it here as it does not need to be recreated. The same is true
+        # for indexes servicing an exclusion constraint.
+        indexes = [
+            index
+            for index in self.introspector.get_index_def(table=self.table)
+            if (not index.is_primary) and (not index.is_exclusion)
+        ]
         self.cur.execute("SHOW lock_timeout;")
         result = self.cur.fetchone()
         assert result is not None
