@@ -3,6 +3,7 @@ import dataclasses
 import pytest
 
 from psycopack import (
+    InheritedTable,
     Repack,
     TableDoesNotExist,
     TableIsEmpty,
@@ -764,3 +765,19 @@ def test_repack_with_exclusion_constraint(connection: _psycopg.Connection) -> No
             repack=repack,
             cur=cur,
         )
+
+
+def test_repack_with_inherited_table(connection: _psycopg.Connection) -> None:
+    with connection.cursor() as cur:
+        cur.execute("CREATE TABLE parent (id SERIAL PRIMARY KEY);")
+        cur.execute("CREATE TABLE child () INHERITS (parent);")
+        # Insert a row so that the table passes the TableIsEmpty check.
+        cur.execute("INSERT INTO child (id) SELECT generate_series(1, 1);")
+        repack = Repack(
+            table="child",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+        )
+        with pytest.raises(InheritedTable):
+            repack.full()

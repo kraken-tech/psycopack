@@ -229,3 +229,20 @@ class Introspector:
             .as_string(self.conn)
         )
         return bool(self.cur.fetchone())
+
+    def is_inherited_table(self, *, table: str) -> bool:
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                SELECT
+                  1
+                FROM
+                  pg_inherits
+                WHERE
+                  inhrelid = {table}::regclass;
+                """)
+            )
+            .format(table=psycopg.sql.Literal(table))
+            .as_string(self.conn)
+        )
+        return bool(self.cur.fetchone())
