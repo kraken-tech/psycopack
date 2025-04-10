@@ -1,7 +1,7 @@
 import dataclasses
 from textwrap import dedent
 
-from . import _cur
+from . import _const, _cur
 from . import _psycopg as psycopg
 
 
@@ -28,6 +28,13 @@ class ReferringForeignKey:
     definition: str
     is_validated: bool
     referring_table: str
+
+
+@dataclasses.dataclass
+class Trigger:
+    name: str
+    is_internal: bool
+    is_psycopack_trigger: bool
 
 
 class Introspector:
@@ -246,3 +253,37 @@ class Introspector:
             .as_string(self.conn)
         )
         return bool(self.cur.fetchone())
+
+    def get_triggers(self, *, table: str) -> list[Trigger]:
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                SELECT
+                  tgname AS name,
+                  tgisinternal AS is_internal,
+                  (
+                    tgname LIKE '%' || {name_prefix} || '%'
+                    OR tgname LIKE '%' || {repacked_name_prefix} || '%'
+                  ) AS is_psycopack_trigger
+                FROM
+                  pg_trigger
+                WHERE
+                  tgrelid = {table}::regclass
+                """)
+            )
+            .format(
+                table=psycopg.sql.Literal(table),
+                name_prefix=psycopg.sql.Literal(_const.NAME_PREFIX),
+                repacked_name_prefix=psycopg.sql.Literal(_const.REPACKED_NAME_PREFIX),
+            )
+            .as_string(self.conn)
+        )
+        results = self.cur.fetchall()
+        return [
+            Trigger(
+                name=name,
+                is_internal=is_internal,
+                is_psycopack_trigger=is_psycopack_trigger,
+            )
+            for name, is_internal, is_psycopack_trigger in results
+        ]
