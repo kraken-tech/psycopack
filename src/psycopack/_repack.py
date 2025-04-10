@@ -13,6 +13,7 @@
 # 5. Add reasonable lock timeouts for operations and failure->retry routines.
 # 6. Add reasonable lock_timeout values to prevent ACCESS EXCLUSIVE queries
 #    blocking the queue by failing to acquire locks quickly.
+from collections import defaultdict
 from textwrap import dedent
 
 from . import _commands, _const, _cur, _identifiers, _introspect, _tracker
@@ -501,31 +502,33 @@ class Repack:
             self.command.drop_function_if_exists(function=self.repacked_function)
 
             # Rename indexes using a dict data structure to hold names from/to.
-            indexes: dict[str, dict[str, str]] = {}
+            # Also deal with duplicated indexes in the same column.
+            indexes: dict[str, list[dict[str, str]]] = defaultdict(list)
             for idx in self.introspector.get_index_def(table=self.repacked_name):
                 sql = idx.definition
                 sql_arr = sql.split(" ON")
                 sql = sql_arr[1].replace(self.repacked_name, self.table)
-                indexes[sql] = {"idx_from": idx.name}
+                indexes[sql].append({"idx_from": idx.name})
 
             for idx in self.introspector.get_index_def(table=self.table):
                 sql = idx.definition
                 sql_arr = sql.split(" ON")
                 sql = sql_arr[1]
-                indexes[sql]["idx_to"] = idx.name
+                idx_data = next(idx for idx in indexes[sql] if "idx_to" not in idx)
+                idx_data["idx_to"] = idx.name
 
             for idx_sql in indexes:
-                index_data = indexes[idx_sql]
-                self.command.rename_index(
-                    idx_from=index_data["idx_from"],
-                    idx_to=_identifiers.build_postgres_identifier(
-                        [index_data["idx_from"]], "idx_from"
-                    ),
-                )
-                self.command.rename_index(
-                    idx_from=index_data["idx_to"],
-                    idx_to=index_data["idx_from"],
-                )
+                for index_data in indexes[idx_sql]:
+                    self.command.rename_index(
+                        idx_from=index_data["idx_from"],
+                        idx_to=_identifiers.build_postgres_identifier(
+                            [index_data["idx_from"]], "idx_from"
+                        ),
+                    )
+                    self.command.rename_index(
+                        idx_from=index_data["idx_to"],
+                        idx_to=index_data["idx_from"],
+                    )
 
             # Rename foreign keys from other tables using a dict data structure to
             # hold names from/to.
