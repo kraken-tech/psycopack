@@ -57,9 +57,14 @@ class Command:
             .as_string(self.conn)
         )
 
-    def create_sequence(self, *, seq: str) -> None:
+    def create_sequence(self, *, seq: str, bigint: bool) -> None:
+        if bigint:
+            sql = "CREATE SEQUENCE {seq} AS BIGINT;"
+        else:
+            sql = "CREATE SEQUENCE {seq};"
+
         self.cur.execute(
-            psycopg.sql.SQL("CREATE SEQUENCE {seq};")
+            psycopg.sql.SQL(sql)
             .format(seq=psycopg.sql.Identifier(seq))
             .as_string(self.conn)
         )
@@ -381,6 +386,25 @@ class Command:
             .format(
                 table=psycopg.sql.Identifier(table),
                 identity_type=psycopg.sql.SQL(identity_type),
+            )
+            .as_string(self.conn)
+        )
+
+    def convert_pk_to_bigint(self, *, table: str, seq: str) -> None:
+        pk_info = self.introspector.get_primary_key_info(table=table)
+        assert pk_info is not None
+        assert len(pk_info.columns) == 1
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                ALTER TABLE {table}
+                ALTER COLUMN {column}
+                SET DATA TYPE BIGINT;
+                """)
+            )
+            .format(
+                table=psycopg.sql.Identifier(table),
+                column=psycopg.sql.Identifier(pk_info.columns[0]),
             )
             .as_string(self.conn)
         )
