@@ -11,6 +11,7 @@ def create_table_for_repacking(
     referred_table_rows: int = 10,
     referring_table_rows: int = 10,
     with_exclusion_constraint: bool = False,
+    pk_type: str = "SERIAL",
 ) -> None:
     """
     Creates a table to repack (default: "to_repack") that has:
@@ -31,10 +32,17 @@ def create_table_for_repacking(
     cur.execute(
         f"INSERT INTO not_valid_referred_table (id) SELECT generate_series(1, {referred_table_rows});"
     )
+
+    if "serial" not in pk_type.lower():
+        # Create a sequence manually.
+        seq = f"{table_name}_seq"
+        cur.execute(f"CREATE SEQUENCE {seq};")
+        pk_type = f"{pk_type} DEFAULT NEXTVAL('{seq}')"
+
     cur.execute(
         dedent(f"""
         CREATE TABLE {table_name} (
-            id SERIAL PRIMARY KEY,
+            id {pk_type} PRIMARY KEY,
             var_with_btree VARCHAR(255),
             var_with_pattern_ops VARCHAR(255),
             int_with_check INTEGER CHECK (int_with_check >= 0),

@@ -37,6 +37,12 @@ class Trigger:
     is_psycopack_trigger: bool
 
 
+@dataclasses.dataclass
+class PrimaryKey:
+    columns: list[str]
+    data_types: list[str]
+
+
 class Introspector:
     def __init__(self, *, conn: psycopg.Connection, cur: _cur.LoggedCursor) -> None:
         self.conn = conn
@@ -287,3 +293,39 @@ class Introspector:
             )
             for name, is_internal, is_psycopack_trigger in results
         ]
+
+    def get_primary_key_info(self, *, table: str) -> PrimaryKey | None:
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                SELECT
+                  columns.column_name,
+                  columns.data_type
+                FROM
+                  information_schema.table_constraints AS cons
+                INNER JOIN
+                  information_schema.key_column_usage AS key
+                  ON (
+                    key.constraint_name = cons.constraint_name
+                    AND key.table_name = cons.table_name
+                  )
+                INNER JOIN
+                  information_schema.columns AS columns
+                  ON (
+                    columns.column_name = key.column_name
+                    AND columns.table_name = cons.table_name
+                  )
+                WHERE
+                  cons.table_name = {table}
+                  AND cons.constraint_type = 'PRIMARY KEY';
+                """)
+            )
+            .format(table=psycopg.sql.Literal(table))
+            .as_string(self.conn)
+        )
+        if not (results := self.cur.fetchall()):
+            return None
+        return PrimaryKey(
+            columns=[col for col, _ in results],
+            data_types=[dt for _, dt in results],
+        )

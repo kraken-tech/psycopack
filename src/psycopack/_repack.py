@@ -1,17 +1,14 @@
 # TODO:
-# 1. In this PoC I assume the PK columns of the original and copy table are
-#    called "id". In future, repacking to raise an error if this isn't the
-#    case.
-# 2. In this PoC I assume the original table doesn't have triggers to/from.
+# 1. In this PoC I assume the original table doesn't have triggers to/from.
 #    In future, repacking needs to raise an error if this isn't the case.
-# 3. The script doesn't take into consideration which schema the tables live
+# 2. The script doesn't take into consideration which schema the tables live
 #    in. This only works if the default schema (public) is being used. In
 #    future, this needs to be changed.
-# 4. Due to the way the backfilling works, it may affect the correlation of a
+# 3. Due to the way the backfilling works, it may affect the correlation of a
 #    certain field. TODO: Investigate if doing it the "repack" way is better in
 #    such cases.
-# 5. Add reasonable lock timeouts for operations and failure->retry routines.
-# 6. Add reasonable lock_timeout values to prevent ACCESS EXCLUSIVE queries
+# 4. Add reasonable lock timeouts for operations and failure->retry routines.
+# 5. Add reasonable lock_timeout values to prevent ACCESS EXCLUSIVE queries
 #    blocking the queue by failing to acquire locks quickly.
 from collections import defaultdict
 from textwrap import dedent
@@ -37,6 +34,18 @@ class InheritedTable(BaseRepackError):
 
 
 class TableHasTriggers(BaseRepackError):
+    pass
+
+
+class PrimaryKeyNotFound(BaseRepackError):
+    pass
+
+
+class CompositePrimaryKey(BaseRepackError):
+    pass
+
+
+class UnsupportedPrimaryKey(BaseRepackError):
     pass
 
 
@@ -165,6 +174,33 @@ class Repack:
 
             if self.introspector.is_inherited_table(table=self.table):
                 raise InheritedTable("Psycopack does not support inherited tables.")
+
+            pk_info = self.introspector.get_primary_key_info(table=self.table)
+            if not pk_info:
+                raise PrimaryKeyNotFound(
+                    "Psycopack does not support tables without a primary key."
+                )
+            if len(pk_info.columns) > 1:
+                raise CompositePrimaryKey(
+                    "Psycopack does not support tables with composite primary keys."
+                )
+            supported_pk_data_types = (
+                "bigint",
+                "bigserial",
+                "integer",
+                "serial",
+                "smallint",
+                "smallserial",
+            )
+            pk_column = pk_info.columns[0]
+            pk_data_type = pk_info.data_types[0]
+            if pk_column != "id" or pk_data_type not in supported_pk_data_types:
+                raise UnsupportedPrimaryKey(
+                    f"Psycopack only supports primary key columns called 'id' "
+                    f"that are in the supported types: {supported_pk_data_types}. "
+                    f"Found a column named: '{pk_column}' of type "
+                    f"'{pk_data_type}' instead."
+                )
 
             unsupported_triggers = [
                 trigger
