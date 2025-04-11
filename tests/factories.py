@@ -47,7 +47,8 @@ def create_table_for_repacking(
             valid_fk INTEGER REFERENCES referred_table(id),
             not_valid_fk INTEGER,
             {table_name} INTEGER,
-            var_maybe_with_exclusion VARCHAR(255)
+            var_maybe_with_exclusion VARCHAR(255),
+            var_with_multiple_idx VARCHAR(10)
         );
     """)
     )
@@ -65,6 +66,17 @@ def create_table_for_repacking(
         ON {table_name} (int_with_long_index_name);
         """)
     )
+
+    cur.execute(
+        f"CREATE INDEX duplicate_idx_1 ON {table_name} (var_with_multiple_idx);"
+    )
+    cur.execute(
+        f"CREATE INDEX duplicate_idx_2 ON {table_name} (var_with_multiple_idx);"
+    )
+    cur.execute(
+        f"CREATE UNIQUE INDEX duplicate_idx_3 ON {table_name} (var_with_multiple_idx);"
+    )
+
     # Index for a column that has the same name as the table.
     cur.execute(f"CREATE INDEX {table_name}_idx ON {table_name} ({table_name});")
     cur.execute(
@@ -126,7 +138,8 @@ def create_table_for_repacking(
             valid_fk,
             not_valid_fk,
             {table_name},
-            var_maybe_with_exclusion
+            var_maybe_with_exclusion,
+            var_with_multiple_idx
         )
         SELECT
             substring(md5(random()::text), 1, 10),
@@ -141,6 +154,7 @@ def create_table_for_repacking(
             (floor(random() * {referred_table_rows}) + 1)::int,
             (floor(random() * {referred_table_rows}) + 1)::int,
             (floor(random() * 10) + 1)::int,
+            substring(md5(random()::text), 1, 10),
             substring(md5(random()::text), 1, 10)
         FROM generate_series(1, {rows});
     """)
