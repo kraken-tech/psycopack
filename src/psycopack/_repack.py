@@ -176,6 +176,7 @@ class Repack:
                 raise InheritedTable("Psycopack does not support inherited tables.")
 
             pk_info = self.introspector.get_primary_key_info(table=self.table)
+
             if not pk_info:
                 raise PrimaryKeyNotFound(
                     "Psycopack does not support tables without a primary key."
@@ -251,13 +252,23 @@ class Repack:
         self.command.create_copy_table(
             base_table=self.table, copy_table=self.copy_table
         )
-        # Create a new sequence for the copied table's id column so that it
-        # does not depend on the original's one. Otherwise, we wouldn't be able
-        # to delete the original table after the repack process is completed
-        # as it would have a dependency (the copy's table seq).
-        self.command.drop_sequence_if_exists(seq=self.id_seq)
-        self.command.create_sequence(seq=self.id_seq)
-        self.command.set_table_id_seq(table=self.copy_table, seq=self.id_seq)
+
+        pk_info = self.introspector.get_primary_key_info(table=self.table)
+        assert pk_info is not None
+
+        if pk_info.identity_type:
+            self.command.set_generated_identity(
+                table=self.copy_table, always=(pk_info.identity_type == "a")
+            )
+        else:
+            # Create a new sequence for the copied table's id column so that it
+            # does not depend on the original's one. Otherwise, we wouldn't be
+            # able to delete the original table after the repack process is
+            # completed as it would have a dependency (the copy's table seq).
+            self.command.drop_sequence_if_exists(seq=self.id_seq)
+            self.command.create_sequence(seq=self.id_seq)
+            self.command.set_table_id_seq(table=self.copy_table, seq=self.id_seq)
+
         # The PK (and the implicit index create from it) are necessary for the
         # triggers to perform index lookups when writing to the table.
         self.command.add_pk(table=self.copy_table)
