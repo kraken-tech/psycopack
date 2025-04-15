@@ -3,11 +3,14 @@ import dataclasses
 import pytest
 
 from psycopack import (
+    CompositePrimaryKey,
     InheritedTable,
+    PrimaryKeyNotFound,
     Repack,
     TableDoesNotExist,
     TableHasTriggers,
     TableIsEmpty,
+    UnsupportedPrimaryKey,
     _cur,
     _introspect,
     _psycopg,
@@ -103,13 +106,18 @@ def _assert_repack(
     assert repack.introspector.get_table_oid(table=repack.tracker.tracker_table) is None
 
 
-def test_repack_full(connection: _psycopg.Connection) -> None:
+@pytest.mark.parametrize(
+    "pk_type",
+    ("bigint", "bigserial", "integer", "serial", "smallint", "smallserial"),
+)
+def test_repack_full(connection: _psycopg.Connection, pk_type: str) -> None:
     with connection.cursor() as cur:
         factories.create_table_for_repacking(
             connection=connection,
             cur=cur,
             table_name="to_repack",
             rows=100,
+            pk_type=pk_type,
         )
         table_before = _collect_table_info(table="to_repack", connection=connection)
         repack = Repack(
@@ -812,4 +820,75 @@ def test_repack_when_table_has_triggers(connection: _psycopg.Connection) -> None
             cur=cur,
         )
         with pytest.raises(TableHasTriggers):
+            repack.full()
+
+
+def test_table_without_pk(connection: _psycopg.Connection) -> None:
+    with connection.cursor() as cur:
+        cur.execute("CREATE TABLE table_without_fk (id integer);")
+        # Insert a row so that the table passes the TableIsEmpty check.
+        cur.execute("INSERT INTO table_without_fk (id) VALUES (42)")
+        repack = Repack(
+            table="table_without_fk",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+        )
+        with pytest.raises(PrimaryKeyNotFound):
+            repack.full()
+
+
+def test_table_without_supported_pk_type(connection: _psycopg.Connection) -> None:
+    with connection.cursor() as cur:
+        cur.execute("CREATE TABLE table_with_var_pk (id varchar PRIMARY KEY);")
+        # Insert a row so that the table passes the TableIsEmpty check.
+        cur.execute("INSERT INTO table_with_var_pk (id) VALUES ('gday')")
+        repack = Repack(
+            table="table_with_var_pk",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+        )
+        with pytest.raises(UnsupportedPrimaryKey):
+            repack.full()
+
+
+def test_table_without_supported_pk_name(connection: _psycopg.Connection) -> None:
+    with connection.cursor() as cur:
+        cur.execute("CREATE TABLE table_with_pk_as_pk_name (pk int PRIMARY KEY);")
+        # Insert a row so that the table passes the TableIsEmpty check.
+        cur.execute("INSERT INTO table_with_pk_as_pk_name (pk) VALUES (1)")
+        repack = Repack(
+            table="table_with_pk_as_pk_name",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+        )
+        with pytest.raises(UnsupportedPrimaryKey):
+            repack.full()
+
+
+def test_table_with_composite_pk(connection: _psycopg.Connection) -> None:
+    with connection.cursor() as cur:
+        cur.execute(
+            # The first column is called "id" on purpose, even though it is not
+            # the single column in the PK definition. This is to guarantee the
+            # check won't pass simply because the column  name is "id".
+            """
+            CREATE TABLE composite_pk (
+                id integer,
+                id_2 varchar,
+                PRIMARY KEY (id, id_2)
+            );
+            """
+        )
+        # Insert a row so that the table passes the TableIsEmpty check.
+        cur.execute("INSERT INTO composite_pk (id, id_2) VALUES (1, 'hey');")
+        repack = Repack(
+            table="composite_pk",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+        )
+        with pytest.raises(CompositePrimaryKey):
             repack.full()
