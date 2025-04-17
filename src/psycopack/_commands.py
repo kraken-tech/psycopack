@@ -99,6 +99,7 @@ class Command:
                 RETURNS VOID AS $$
 
                   INSERT INTO {table_to}
+                  OVERRIDING SYSTEM VALUE
                   SELECT {columns}
                   FROM {table_from}
                   WHERE id BETWEEN $1 AND $2
@@ -363,6 +364,23 @@ class Command:
                 table=psycopg.sql.Identifier(table),
                 constraint=psycopg.sql.Identifier(name),
                 definition=psycopg.sql.SQL(definition),
+            )
+            .as_string(self.conn)
+        )
+
+    def set_generated_identity(self, *, table: str, always: bool) -> None:
+        identity_type = "ALWAYS" if always else "BY DEFAULT"
+        self.cur.execute(
+            sql=psycopg.sql.SQL(
+                dedent("""
+                ALTER TABLE {table}
+                ALTER COLUMN id
+                ADD GENERATED {identity_type} AS IDENTITY;
+                """)
+            )
+            .format(
+                table=psycopg.sql.Identifier(table),
+                identity_type=psycopg.sql.SQL(identity_type),
             )
             .as_string(self.conn)
         )

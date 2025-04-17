@@ -41,6 +41,7 @@ class Trigger:
 class PrimaryKey:
     columns: list[str]
     data_types: list[str]
+    identity_type: str
 
 
 class Introspector:
@@ -295,29 +296,23 @@ class Introspector:
         ]
 
     def get_primary_key_info(self, *, table: str) -> PrimaryKey | None:
+        # Based on:
+        # https://wiki.postgresql.org/wiki/Retrieve_primary_key_columns
         self.cur.execute(
             psycopg.sql.SQL(
                 dedent("""
                 SELECT
-                  columns.column_name,
-                  columns.data_type
+                  attr.attname AS column_name,
+                  format_type(attr.atttypid, attr.atttypmod) AS data_type,
+                  attr.attidentity AS identity_type
                 FROM
-                  information_schema.table_constraints AS cons
-                INNER JOIN
-                  information_schema.key_column_usage AS key
-                  ON (
-                    key.constraint_name = cons.constraint_name
-                    AND key.table_name = cons.table_name
-                  )
-                INNER JOIN
-                  information_schema.columns AS columns
-                  ON (
-                    columns.column_name = key.column_name
-                    AND columns.table_name = cons.table_name
-                  )
+                  pg_index idx
+                JOIN
+                  pg_attribute attr
+                  ON attr.attrelid = idx.indrelid AND attr.attnum = ANY(idx.indkey)
                 WHERE
-                  cons.table_name = {table}
-                  AND cons.constraint_type = 'PRIMARY KEY';
+                  idx.indrelid = {table}::regclass
+                  AND idx.indisprimary;
                 """)
             )
             .format(table=psycopg.sql.Literal(table))
@@ -326,6 +321,7 @@ class Introspector:
         if not (results := self.cur.fetchall()):
             return None
         return PrimaryKey(
-            columns=[col for col, _ in results],
-            data_types=[dt for _, dt in results],
+            columns=[col for col, _, _ in results],
+            data_types=[dt for _, dt, _ in results],
+            identity_type=next(identity for _, _, identity in results),
         )

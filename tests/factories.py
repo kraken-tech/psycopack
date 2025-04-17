@@ -33,7 +33,7 @@ def create_table_for_repacking(
         f"INSERT INTO not_valid_referred_table (id) SELECT generate_series(1, {referred_table_rows});"
     )
 
-    if "serial" not in pk_type.lower():
+    if "serial" not in pk_type.lower() and "identity" not in pk_type.lower():
         # Create a sequence manually.
         seq = f"{table_name}_seq"
         cur.execute(f"CREATE SEQUENCE {seq};")
