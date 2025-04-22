@@ -916,19 +916,30 @@ def test_table_without_supported_pk_type(connection: _psycopg.Connection) -> Non
             repack.full()
 
 
-def test_table_without_supported_pk_name(connection: _psycopg.Connection) -> None:
+def test_with_pk_name_different_than_id(connection: _psycopg.Connection) -> None:
     with connection.cursor() as cur:
-        cur.execute("CREATE TABLE table_with_pk_as_pk_name (pk int PRIMARY KEY);")
-        # Insert a row so that the table passes the TableIsEmpty check.
-        cur.execute("INSERT INTO table_with_pk_as_pk_name (pk) VALUES (1)")
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+            pk_name="a_name_that_is_not_id",
+        )
+        table_before = _collect_table_info(table="to_repack", connection=connection)
         repack = Repack(
-            table="table_with_pk_as_pk_name",
+            table="to_repack",
             batch_size=1,
             conn=connection,
             cur=cur,
         )
-        with pytest.raises(UnsupportedPrimaryKey):
-            repack.full()
+        repack.full()
+        table_after = _collect_table_info(table="to_repack", connection=connection)
+        _assert_repack(
+            table_before=table_before,
+            table_after=table_after,
+            repack=repack,
+            cur=cur,
+        )
 
 
 def test_table_with_composite_pk(connection: _psycopg.Connection) -> None:
