@@ -26,6 +26,7 @@ class _TableInfo:
     indexes: list[_introspect.Index]
     referring_fks: list[_introspect.ReferringForeignKey]
     constraints: list[_introspect.Constraint]
+    pk_seq: str
 
 
 def _collect_table_info(table: str, connection: _psycopg.Connection) -> _TableInfo:
@@ -40,12 +41,14 @@ def _collect_table_info(table: str, connection: _psycopg.Connection) -> _TableIn
         constraints = introspector.get_constraints(
             table=table, types=["c", "f", "n", "p", "u", "t", "x"]
         )
+        pk_seq = introspector.get_pk_sequence_name(table=table)
 
     return _TableInfo(
         oid=oid,
         indexes=indexes,
         referring_fks=referring_fks,
         constraints=constraints,
+        pk_seq=pk_seq,
     )
 
 
@@ -94,6 +97,7 @@ def _assert_repack(
     assert table_before.indexes == table_after.indexes
     assert table_before.referring_fks == table_after.referring_fks
     assert table_before.constraints == table_after.constraints
+    assert table_before.pk_seq == table_after.pk_seq
 
     # All functions and triggers are removed.
     trigger_info = _get_trigger_info(repack, cur)
@@ -1010,7 +1014,6 @@ def test_with_primary_key_enlargement(
         )
         pk_info = repack.introspector.get_primary_key_info(table="to_repack")
         assert pk_info and pk_info.data_types[0] == "bigint"
-
         cur.execute(
             f"""
             SELECT
@@ -1018,7 +1021,7 @@ def test_with_primary_key_enlargement(
             FROM
               pg_sequences
             WHERE
-              sequencename = '{repack.id_seq}'
+              sequencename = '{table_after.pk_seq}'
               -- 2^63 - 1
               AND max_value = 9223372036854775807;
             """
