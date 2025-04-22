@@ -1027,3 +1027,46 @@ def test_with_primary_key_enlargement(
             """
         )
         assert cur.fetchone()
+
+
+@pytest.mark.parametrize(
+    "pk_type,convert_pk_to_bigint,expected_seq_max_val,expected_pk_type",
+    (
+        ("smallserial", False, 2147483647, "smallint"),
+        ("smallserial", True, 9223372036854775807, "bigint"),
+        ("serial", False, 2147483647, "int"),
+        ("serial", True, 9223372036854775807, "bigint"),
+        ("bigserial", False, 9223372036854775807, "bigint"),
+    ),
+)
+def test_repack_full_with_serial_pk(
+    connection: _psycopg.Connection,
+    pk_type: str,
+    convert_pk_to_bigint: bool,
+    expected_seq_max_val: int,
+    expected_pk_type: str,
+) -> None:
+    with connection.cursor() as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+            pk_type=pk_type,
+        )
+        table_before = _collect_table_info(table="to_repack", connection=connection)
+        repack = Repack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+            convert_pk_to_bigint=convert_pk_to_bigint,
+        )
+        repack.full()
+        table_after = _collect_table_info(table="to_repack", connection=connection)
+        _assert_repack(
+            table_before=table_before,
+            table_after=table_after,
+            repack=repack,
+            cur=cur,
+        )
