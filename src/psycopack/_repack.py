@@ -49,6 +49,10 @@ class UnsupportedPrimaryKey(BaseRepackError):
     pass
 
 
+class InvalidPrimaryKeyTypeForConversion(BaseRepackError):
+    pass
+
+
 class Repack:
     """
     Class for operating a full table repack.
@@ -91,6 +95,7 @@ class Repack:
         batch_size: int,
         conn: psycopg.Connection,
         cur: psycopg.Cursor,
+        convert_pk_to_bigint: bool = False,
     ) -> None:
         self.conn = conn
         self.cur = _cur.LoggedCursor(cur=cur)
@@ -99,6 +104,8 @@ class Repack:
 
         self.table = table
         self.batch_size = batch_size
+
+        self.convert_pk_to_bigint = convert_pk_to_bigint
 
         # Names for the copy table.
         self.copy_table = self._get_copy_table_name()
@@ -219,6 +226,12 @@ class Repack:
                     "Psycopack does not support table with triggers."
                 )
 
+            if self.convert_pk_to_bigint and "big" in pk_data_type:
+                raise InvalidPrimaryKeyTypeForConversion(
+                    f"Psycopack can't convert the table's primary key type "
+                    f"from {pk_data_type} to a larger type."
+                )
+
     def setup_repacking(self) -> None:
         with self.tracker.track(_tracker.Stage.SETUP):
             self._create_copy_table()
@@ -253,8 +266,15 @@ class Repack:
             base_table=self.table, copy_table=self.copy_table
         )
 
+        # The PK (and the implicit index create from it) are necessary for the
+        # triggers to perform index lookups when writing to the table.
+        self.command.add_pk(table=self.copy_table)
+
+        if self.convert_pk_to_bigint:
+            self.command.convert_pk_to_bigint(table=self.copy_table, seq=self.id_seq)
+
         pk_info = self.introspector.get_primary_key_info(table=self.table)
-        assert pk_info is not None
+        assert pk_info is not None and len(pk_info.columns) == 1
 
         if pk_info.identity_type:
             self.command.set_generated_identity(
@@ -266,12 +286,11 @@ class Repack:
             # able to delete the original table after the repack process is
             # completed as it would have a dependency (the copy's table seq).
             self.command.drop_sequence_if_exists(seq=self.id_seq)
-            self.command.create_sequence(seq=self.id_seq)
+            self.command.create_sequence(
+                seq=self.id_seq,
+                bigint=("big" in pk_info.data_types[0].lower()),
+            )
             self.command.set_table_id_seq(table=self.copy_table, seq=self.id_seq)
-
-        # The PK (and the implicit index create from it) are necessary for the
-        # triggers to perform index lookups when writing to the table.
-        self.command.add_pk(table=self.copy_table)
 
         # If the original table has exclusion constraints, they need to be
         # replicated here when setting up the copy table. This is a limitation
