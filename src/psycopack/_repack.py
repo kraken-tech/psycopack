@@ -493,9 +493,10 @@ class Repack:
     def swap(self) -> None:
         """
         1. Drop the trigger (and function) that kept the copy table in sync.
-        2. Rename the copy table (new) to the original name and the original
+        2. Swap the primary key sequence names.
+        3. Rename the copy table (new) to the original name and the original
            (old) table to a new temp name.
-        3. Create triggers from the new table to the old table to keep
+        4. Create triggers from the new table to the old table to keep
            both in sync, in case the changes need to be reverted.
         """
         with self.tracker.track(_tracker.Stage.SWAP):
@@ -508,6 +509,9 @@ class Repack:
                     table=self.table, trigger=self.trigger
                 )
                 self.command.drop_function_if_exists(function=self.function)
+                self.command.swap_pk_sequence_name(
+                    first_table=self.table, second_table=self.copy_table
+                )
                 self.command.rename_table(
                     table_from=self.table, table_to=self.repacked_name
                 )
@@ -537,9 +541,10 @@ class Repack:
 
         1. Drop the trigger (and function) that kept the original table in sync
            with the swapped-in copy.
-        2. Rename the copy table back to its original copy name, and the
+        2. Swap the primary key sequence names.
+        3. Rename the copy table back to its original copy name, and the
            original table back to its original name.
-        3. Create triggers from the old table to the copy table to keep both in
+        4. Create triggers from the old table to the copy table to keep both in
            sync.
         """
         with self.command.db_transaction():
@@ -553,6 +558,9 @@ class Repack:
                 trigger=self.repacked_trigger,
             )
             self.command.drop_function_if_exists(function=self.repacked_function)
+            self.command.swap_pk_sequence_name(
+                first_table=self.table, second_table=self.repacked_name
+            )
             self.command.rename_table(table_from=self.table, table_to=self.copy_table)
             self.command.rename_table(
                 table_from=self.repacked_name, table_to=self.table

@@ -343,6 +343,16 @@ class Command:
             .as_string(self.conn)
         )
 
+    def rename_sequence(self, *, seq_from: str, seq_to: str) -> None:
+        self.cur.execute(
+            psycopg.sql.SQL("ALTER SEQUENCE {seq_from} RENAME TO {seq_to};")
+            .format(
+                seq_from=psycopg.sql.Identifier(seq_from),
+                seq_to=psycopg.sql.Identifier(seq_to),
+            )
+            .as_string(self.conn)
+        )
+
     def rename_constraint(self, *, table: str, cons_from: str, cons_to: str) -> None:
         self.cur.execute(
             psycopg.sql.SQL(
@@ -408,6 +418,16 @@ class Command:
             )
             .as_string(self.conn)
         )
+
+    def swap_pk_sequence_name(self, *, first_table: str, second_table: str) -> None:
+        first_seq = self.introspector.get_pk_sequence_name(table=first_table)
+        second_seq = self.introspector.get_pk_sequence_name(table=second_table)
+        temp_seq = f"{first_seq}_temp"
+
+        with self.db_transaction():
+            self.rename_sequence(seq_from=first_seq, seq_to=temp_seq)
+            self.rename_sequence(seq_from=second_seq, seq_to=first_seq)
+            self.rename_sequence(seq_from=temp_seq, seq_to=second_seq)
 
     @contextmanager
     def db_transaction(self) -> Iterator[None]:

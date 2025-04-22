@@ -325,3 +325,67 @@ class Introspector:
             data_types=[dt for _, dt, _ in results],
             identity_type=next(identity for _, _, identity in results),
         )
+
+    def get_pk_sequence_name(self, *, table: str) -> str:
+        pk_info = self.get_primary_key_info(table=table)
+        assert pk_info is not None
+        assert len(pk_info.columns) == 1
+
+        if pk_info.identity_type:
+            self.cur.execute(
+                psycopg.sql.SQL("SELECT pg_get_serial_sequence({table}, {column});")
+                .format(
+                    table=psycopg.sql.Literal(table),
+                    column=psycopg.sql.Literal(pk_info.columns[0]),
+                )
+                .as_string(self.conn)
+            )
+            result = self.cur.fetchone()
+            assert result is not None
+            # The result is like `schema.name`.
+            seq = result[0].split(".")[1]
+            assert isinstance(seq, str)
+            return seq
+        else:
+            # For non-identity primary keys such as serial and manually-defined
+            # sequence fields, the "pg_get_serial_sequence" does not work.
+            # Also, this query does not work for identity tables so this
+            # function can't be further generalised.
+            self.cur.execute(
+                psycopg.sql.SQL(
+                    dedent("""
+                    SELECT
+                      (
+                        SELECT
+                          pg_catalog.pg_get_expr(attdef.adbin, attdef.adrelid, true)
+                        FROM
+                          pg_catalog.pg_attrdef attdef
+                        WHERE
+                          attdef.adrelid = att.attrelid
+                          AND attdef.adnum = att.attnum
+                          AND att.atthasdef
+                      ) AS seq_def
+                    FROM
+                      pg_catalog.pg_attribute att
+                    WHERE
+                      att.attrelid = {table}::regclass
+                      AND att.attname = {column}
+                    ORDER BY att.attnum;
+                    """)
+                )
+                .format(
+                    table=psycopg.sql.Literal(table),
+                    column=psycopg.sql.Literal(pk_info.columns[0]),
+                )
+                .as_string(self.conn)
+            )
+            result = self.cur.fetchone()
+            assert result is not None
+            seq_def = result[0]
+            assert isinstance(seq_def, str)
+            # The seq_def variable looks something like:
+            #  nextval('psycopack_2999727_id_seq'::regclass)
+            # So we need to parse the sequence name out.
+            start: int = seq_def.find("'") + 1
+            end: int = seq_def.find("'", start)
+            return seq_def[start:end]
