@@ -10,6 +10,8 @@
 # 4. Add reasonable lock timeouts for operations and failure->retry routines.
 # 5. Add reasonable lock_timeout values to prevent ACCESS EXCLUSIVE queries
 #    blocking the queue by failing to acquire locks quickly.
+import dataclasses
+import typing
 from collections import defaultdict
 from textwrap import dedent
 
@@ -51,6 +53,17 @@ class UnsupportedPrimaryKey(BaseRepackError):
 
 class InvalidPrimaryKeyTypeForConversion(BaseRepackError):
     pass
+
+
+@dataclasses.dataclass
+class BackfillBatch:
+    id: int
+    start: int
+    end: int
+
+
+class PostBackfillBatchCallback(typing.Protocol):
+    def __call__(self, batch: BackfillBatch, /) -> None: ...  # pragma: no cover
 
 
 class Repack:
@@ -96,6 +109,7 @@ class Repack:
         conn: psycopg.Connection,
         cur: psycopg.Cursor,
         convert_pk_to_bigint: bool = False,
+        post_backfill_batch_callback: PostBackfillBatchCallback | None = None,
     ) -> None:
         self.conn = conn
         self.cur = _cur.LoggedCursor(cur=cur)
@@ -104,6 +118,7 @@ class Repack:
 
         self.table = table
         self.batch_size = batch_size
+        self.post_backfill_batch_callback = post_backfill_batch_callback
 
         self.convert_pk_to_bigint = convert_pk_to_bigint
 
@@ -432,6 +447,10 @@ class Repack:
                         id=psycopg.sql.Literal(id),
                     )
                     .as_string(self.conn)
+                )
+            if self.post_backfill_batch_callback:
+                self.post_backfill_batch_callback(
+                    BackfillBatch(id=id, start=batch_start, end=batch_end)
                 )
 
     def _create_indexes(self) -> None:

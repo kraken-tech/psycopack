@@ -3,6 +3,7 @@ A customizable way to repack a table using psycopg.
 """
 
 from ._repack import (
+    BackfillBatch,
     BaseRepackError,
     CompositePrimaryKey,
     InheritedTable,
@@ -17,6 +18,7 @@ from ._repack import (
 
 
 __all__ = (
+    "BackfillBatch",
     "BaseRepackError",
     "CompositePrimaryKey",
     "InheritedTable",

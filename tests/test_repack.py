@@ -3,6 +3,7 @@ import dataclasses
 import pytest
 
 from psycopack import (
+    BackfillBatch,
     CompositePrimaryKey,
     InheritedTable,
     InvalidPrimaryKeyTypeForConversion,
@@ -1193,3 +1194,44 @@ def test_when_table_does_not_have_pk_with_sequence(
             repack=repack,
             cur=cur,
         )
+
+
+def test_when_post_backfill_batch_callback_is_passed(
+    connection: _psycopg.Connection,
+) -> None:
+    batches = []
+
+    def my_sweet_callback(batch: BackfillBatch) -> None:
+        batches.append(batch)
+
+    with connection.cursor() as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+        )
+        table_before = _collect_table_info(table="to_repack", connection=connection)
+        repack = Repack(
+            table="to_repack",
+            batch_size=25,
+            conn=connection,
+            cur=cur,
+            post_backfill_batch_callback=my_sweet_callback,
+        )
+        repack.full()
+        table_after = _collect_table_info(table="to_repack", connection=connection)
+        _assert_repack(
+            table_before=table_before,
+            table_after=table_after,
+            repack=repack,
+            cur=cur,
+        )
+
+    # For a table of 100 rows with batch_size of 25, we have 4 batches:
+    assert batches == [
+        BackfillBatch(id=1, start=1, end=25),
+        BackfillBatch(id=2, start=26, end=50),
+        BackfillBatch(id=3, start=51, end=75),
+        BackfillBatch(id=4, start=76, end=100),
+    ]
