@@ -301,7 +301,7 @@ class Repack:
                 always=(pk_info.identity_type == "a"),
                 pk_column=self.pk_column,
             )
-        else:
+        elif self.introspector.get_pk_sequence_name(table=self.table):
             # Create a new sequence for the copied table's id column so that it
             # does not depend on the original's one. Otherwise, we wouldn't be
             # able to delete the original table after the repack process is
@@ -539,9 +539,10 @@ class Repack:
                     table=self.table, trigger=self.trigger
                 )
                 self.command.drop_function_if_exists(function=self.function)
-                self.command.swap_pk_sequence_name(
-                    first_table=self.table, second_table=self.copy_table
-                )
+                if self.introspector.get_pk_sequence_name(table=self.table):
+                    self.command.swap_pk_sequence_name(
+                        first_table=self.table, second_table=self.copy_table
+                    )
                 self.command.rename_table(
                     table_from=self.table, table_to=self.repacked_name
                 )
@@ -590,9 +591,10 @@ class Repack:
                 trigger=self.repacked_trigger,
             )
             self.command.drop_function_if_exists(function=self.repacked_function)
-            self.command.swap_pk_sequence_name(
-                first_table=self.table, second_table=self.repacked_name
-            )
+            if self.introspector.get_pk_sequence_name(table=self.table):
+                self.command.swap_pk_sequence_name(
+                    first_table=self.table, second_table=self.repacked_name
+                )
             self.command.rename_table(table_from=self.table, table_to=self.copy_table)
             self.command.rename_table(
                 table_from=self.repacked_name, table_to=self.table

@@ -385,6 +385,9 @@ class Introspector:
             result = self.cur.fetchone()
             assert result is not None
             seq_def = result[0]
+            if seq_def is None:
+                return ""
+
             assert isinstance(seq_def, str)
             # The seq_def variable looks something like:
             #  nextval('psycopack_2999727_id_seq'::regclass)

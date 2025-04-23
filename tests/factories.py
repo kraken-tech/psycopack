@@ -13,6 +13,7 @@ def create_table_for_repacking(
     with_exclusion_constraint: bool = False,
     pk_type: str = "SERIAL",
     pk_name: str = "id",
+    ommit_sequence: bool = False,
 ) -> None:
     """
     Creates a table to repack (default: "to_repack") that has:
@@ -34,7 +35,11 @@ def create_table_for_repacking(
         f"INSERT INTO not_valid_referred_table (id) SELECT generate_series(1, {referred_table_rows});"
     )
 
-    if "serial" not in pk_type.lower() and "identity" not in pk_type.lower():
+    if (
+        "serial" not in pk_type.lower()
+        and "identity" not in pk_type.lower()
+        and not ommit_sequence
+    ):
         # Create a sequence manually.
         seq = f"{table_name}_seq"
         cur.execute(f"CREATE SEQUENCE {seq};")
@@ -135,6 +140,7 @@ def create_table_for_repacking(
     cur.execute(
         dedent(f"""
         INSERT INTO {table_name} (
+            {"id," if ommit_sequence else ""}
             var_with_btree,
             var_with_pattern_ops,
             int_with_check,
@@ -151,6 +157,7 @@ def create_table_for_repacking(
             var_with_multiple_idx
         )
         SELECT
+            {"gs," if ommit_sequence else ""}
             substring(md5(random()::text), 1, 10),
             substring(md5(random()::text), 1, 10),
             (floor(random() * 10) + 1)::int,
@@ -165,7 +172,7 @@ def create_table_for_repacking(
             (floor(random() * 10) + 1)::int,
             substring(md5(random()::text), 1, 10),
             substring(md5(random()::text), 1, 10)
-        FROM generate_series(1, {rows});
+        FROM generate_series(1, {rows}) AS gs;
     """)
     )
     cur.execute(
