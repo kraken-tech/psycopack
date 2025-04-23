@@ -1081,3 +1081,81 @@ def test_repack_full_with_serial_pk(
             repack=repack,
             cur=cur,
         )
+
+
+def test_when_table_has_large_value_being_inserted(
+    connection: _psycopg.Connection,
+) -> None:
+    with connection.cursor() as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+            pk_type="bigint",
+            referred_table_rows=10,
+        )
+        # Manipulate the underlying sequence so that the nextval is set to
+        # a number that is greater than a signed 32bit integer.
+        cur.execute(
+            """
+            ALTER SEQUENCE
+              to_repack_seq
+            INCREMENT BY
+              9223372036854775706;
+            """
+        )
+        # And insert into the table a new row that will have a large pk value.
+        cur.execute(
+            """
+            INSERT INTO to_repack (
+                var_with_btree,
+                var_with_pattern_ops,
+                int_with_check,
+                int_with_not_valid_check,
+                int_with_long_index_name,
+                var_with_unique_idx,
+                var_with_unique_const,
+                var_with_deferrable_const,
+                var_with_deferred_const,
+                valid_fk,
+                not_valid_fk,
+                to_repack,
+                var_maybe_with_exclusion,
+                var_with_multiple_idx
+            )
+            SELECT
+                substring(md5(random()::text), 1, 10),
+                substring(md5(random()::text), 1, 10),
+                (floor(random() * 10) + 1)::int,
+                (floor(random() * 10) + 1)::int,
+                (floor(random() * 10) + 1)::int,
+                substring(md5(random()::text), 1, 10),
+                substring(md5(random()::text), 1, 10),
+                substring(md5(random()::text), 1, 10),
+                substring(md5(random()::text), 1, 10),
+                (floor(random() * 10) + 1)::int,
+                (floor(random() * 10) + 1)::int,
+                (floor(random() * 10) + 1)::int,
+                substring(md5(random()::text), 1, 10),
+                substring(md5(random()::text), 1, 10)
+            FROM generate_series(1, 1);
+        """
+        )
+        table_before = _collect_table_info(table="to_repack", connection=connection)
+        repack = Repack(
+            table="to_repack",
+            conn=connection,
+            cur=cur,
+            # Very large number so that we don't create a very large amount of
+            # batches in the backfill log table.
+            batch_size=9000000000000000000,
+        )
+        repack.full()
+        table_after = _collect_table_info(table="to_repack", connection=connection)
+        _assert_repack(
+            table_before=table_before,
+            table_after=table_after,
+            repack=repack,
+            cur=cur,
+        )

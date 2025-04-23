@@ -110,7 +110,7 @@ class Command:
         self.cur.execute(
             psycopg.sql.SQL(
                 dedent("""
-                CREATE OR REPLACE FUNCTION {function}(INTEGER, INTEGER)
+                CREATE OR REPLACE FUNCTION {function}(BIGINT, BIGINT)
                 RETURNS VOID AS $$
 
                   INSERT INTO {table_to}
@@ -195,8 +195,8 @@ class Command:
                 dedent("""
                 CREATE TABLE {table} (
                   id SERIAL PRIMARY KEY,
-                  batch_start INT,
-                  batch_end INT,
+                  batch_start BIGINT,
+                  batch_end BIGINT,
                   finished BOOLEAN
                 );
                 """)
