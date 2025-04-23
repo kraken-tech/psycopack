@@ -719,7 +719,10 @@ def test_cannot_skip_order_of_stages(connection: _psycopg.Connection) -> None:
         )
 
 
-def test_revert_swap_after_swap_called(connection: _psycopg.Connection) -> None:
+@pytest.mark.parametrize("ommit_sequence", (True, False))
+def test_revert_swap_after_swap_called(
+    connection: _psycopg.Connection, ommit_sequence: bool
+) -> None:
     """
     The revert_swap() routine can only be called immediatelly after swap().
 
@@ -732,6 +735,8 @@ def test_revert_swap_after_swap_called(connection: _psycopg.Connection) -> None:
             cur=cur,
             table_name="to_repack",
             rows=100,
+            pk_type="integer",
+            ommit_sequence=ommit_sequence,
         )
         table_before = _collect_table_info(table="to_repack", connection=connection)
         repack = Repack(
@@ -1150,6 +1155,35 @@ def test_when_table_has_large_value_being_inserted(
             # Very large number so that we don't create a very large amount of
             # batches in the backfill log table.
             batch_size=9000000000000000000,
+        )
+        repack.full()
+        table_after = _collect_table_info(table="to_repack", connection=connection)
+        _assert_repack(
+            table_before=table_before,
+            table_after=table_after,
+            repack=repack,
+            cur=cur,
+        )
+
+
+def test_when_table_does_not_have_pk_with_sequence(
+    connection: _psycopg.Connection,
+) -> None:
+    with connection.cursor() as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+            pk_type="integer",
+            ommit_sequence=True,
+        )
+        table_before = _collect_table_info(table="to_repack", connection=connection)
+        repack = Repack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
         )
         repack.full()
         table_after = _collect_table_info(table="to_repack", connection=connection)
