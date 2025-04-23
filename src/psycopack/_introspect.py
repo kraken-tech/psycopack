@@ -82,25 +82,28 @@ class Introspector:
         )
         return [r[0] for r in self.cur.fetchall()]
 
-    def get_min_and_max_id(self, *, table: str) -> tuple[int, int]:
+    def get_min_and_max_pk(self, *, table: str, pk_column: str) -> tuple[int, int]:
         self.cur.execute(
             psycopg.sql.SQL(
                 dedent("""
                 SELECT
-                  MIN(id) AS min_id,
-                  MAX(id) AS max_id
+                  MIN({pk_column}) AS min_pk,
+                  MAX({pk_column}) AS max_pk
                 FROM {table};
                 """)
             )
-            .format(table=psycopg.sql.Identifier(table))
+            .format(
+                table=psycopg.sql.Identifier(table),
+                pk_column=psycopg.sql.Identifier(pk_column),
+            )
             .as_string(self.conn)
         )
         result = self.cur.fetchone()
         assert result is not None
-        min_id, max_id = result
-        assert isinstance(min_id, int)
-        assert isinstance(max_id, int)
-        return min_id, max_id
+        min_pk, max_pk = result
+        assert isinstance(min_pk, int)
+        assert isinstance(max_pk, int)
+        return min_pk, max_pk
 
     def get_index_def(self, *, table: str) -> list[Index]:
         self.cur.execute(

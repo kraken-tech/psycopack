@@ -69,31 +69,41 @@ class Command:
             .as_string(self.conn)
         )
 
-    def set_table_id_seq(self, *, table: str, seq: str) -> None:
+    def set_table_id_seq(self, *, table: str, seq: str, pk_column: str) -> None:
         self.cur.execute(
             psycopg.sql.SQL(
                 dedent("""
                 ALTER TABLE {table}
-                ALTER COLUMN id
+                ALTER COLUMN {pk_column}
                 SET DEFAULT nextval('{seq}');
                 """)
             )
             .format(
                 table=psycopg.sql.Identifier(table),
+                pk_column=psycopg.sql.Identifier(pk_column),
                 seq=psycopg.sql.Identifier(seq),
             )
             .as_string(self.conn)
         )
 
-    def add_pk(self, *, table: str) -> None:
+    def add_pk(self, *, table: str, pk_column: str) -> None:
         self.cur.execute(
-            psycopg.sql.SQL("ALTER TABLE {table} ADD PRIMARY KEY (id);")
-            .format(table=psycopg.sql.Identifier(table))
+            psycopg.sql.SQL("ALTER TABLE {table} ADD PRIMARY KEY ({pk_column});")
+            .format(
+                table=psycopg.sql.Identifier(table),
+                pk_column=psycopg.sql.Identifier(pk_column),
+            )
             .as_string(self.conn)
         )
 
     def create_copy_function(
-        self, *, function: str, table_from: str, table_to: str, columns: list[str]
+        self,
+        *,
+        function: str,
+        table_from: str,
+        table_to: str,
+        columns: list[str],
+        pk_column: str,
     ) -> None:
         # Note: assumes "id" to be the primary key.
         # TODO: generalise so other PK types can work.
@@ -107,7 +117,7 @@ class Command:
                   OVERRIDING SYSTEM VALUE
                   SELECT {columns}
                   FROM {table_from}
-                  WHERE id BETWEEN $1 AND $2
+                  WHERE {pk_column} BETWEEN $1 AND $2
                   ON CONFLICT DO NOTHING
 
                 $$ LANGUAGE SQL SECURITY DEFINER;
@@ -120,6 +130,7 @@ class Command:
                 columns=psycopg.sql.SQL(",").join(
                     [psycopg.sql.Identifier(c) for c in columns]
                 ),
+                pk_column=psycopg.sql.Identifier(pk_column),
             )
             .as_string(self.conn)
         )
@@ -140,6 +151,7 @@ class Command:
         function: str,
         table_from: str,
         table_to: str,
+        pk_column: str,
     ) -> None:
         self.cur.execute(
             psycopg.sql.SQL(
@@ -149,14 +161,14 @@ class Command:
                 $$
                 BEGIN
                   IF ( TG_OP = 'INSERT') THEN
-                    PERFORM {function}(NEW.id, NEW.id);
+                    PERFORM {function}(NEW.{pk_column}, NEW.{pk_column});
                     RETURN NEW;
                   ELSIF ( TG_OP = 'UPDATE') THEN
-                    DELETE FROM {table_to} WHERE id = OLD.id;
-                    PERFORM {function}(NEW.id, NEW.id);
+                    DELETE FROM {table_to} WHERE {pk_column} = OLD.{pk_column};
+                    PERFORM {function}(NEW.{pk_column}, NEW.{pk_column});
                     RETURN NEW;
                   ELSIF ( TG_OP = 'DELETE') THEN
-                    DELETE FROM {table_to} WHERE id = OLD.id;
+                    DELETE FROM {table_to} WHERE {pk_column} = OLD.{pk_column};
                     RETURN OLD;
                   END IF;
                 END;
@@ -172,6 +184,7 @@ class Command:
                 function=psycopg.sql.Identifier(function),
                 table_from=psycopg.sql.Identifier(table_from),
                 table_to=psycopg.sql.Identifier(table_to),
+                pk_column=psycopg.sql.Identifier(pk_column),
             )
             .as_string(self.conn)
         )
@@ -223,12 +236,12 @@ class Command:
         self,
         table: str,
         batch_size: int,
-        min_id: int,
-        max_id: int,
+        min_pk: int,
+        max_pk: int,
     ) -> None:
         batches = (
-            (batch_start, min(batch_start + batch_size - 1, max_id), False)
-            for batch_start in range(min_id, max_id + 1, batch_size)
+            (batch_start, min(batch_start + batch_size - 1, max_pk), False)
+            for batch_start in range(min_pk, max_pk + 1, batch_size)
         )
         self.cur.execute(
             psycopg.sql.SQL(
@@ -383,38 +396,38 @@ class Command:
             .as_string(self.conn)
         )
 
-    def set_generated_identity(self, *, table: str, always: bool) -> None:
+    def set_generated_identity(
+        self, *, table: str, always: bool, pk_column: str
+    ) -> None:
         identity_type = "ALWAYS" if always else "BY DEFAULT"
         self.cur.execute(
             sql=psycopg.sql.SQL(
                 dedent("""
                 ALTER TABLE {table}
-                ALTER COLUMN id
+                ALTER COLUMN {pk_column}
                 ADD GENERATED {identity_type} AS IDENTITY;
                 """)
             )
             .format(
                 table=psycopg.sql.Identifier(table),
+                pk_column=psycopg.sql.Identifier(pk_column),
                 identity_type=psycopg.sql.SQL(identity_type),
             )
             .as_string(self.conn)
         )
 
-    def convert_pk_to_bigint(self, *, table: str, seq: str) -> None:
-        pk_info = self.introspector.get_primary_key_info(table=table)
-        assert pk_info is not None
-        assert len(pk_info.columns) == 1
+    def convert_pk_to_bigint(self, *, table: str, seq: str, pk_column: str) -> None:
         self.cur.execute(
             psycopg.sql.SQL(
                 dedent("""
                 ALTER TABLE {table}
-                ALTER COLUMN {column}
+                ALTER COLUMN {pk_column}
                 SET DATA TYPE BIGINT;
                 """)
             )
             .format(
                 table=psycopg.sql.Identifier(table),
-                column=psycopg.sql.Identifier(pk_info.columns[0]),
+                pk_column=psycopg.sql.Identifier(pk_column),
             )
             .as_string(self.conn)
         )

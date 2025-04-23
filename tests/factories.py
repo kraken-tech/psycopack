@@ -12,6 +12,7 @@ def create_table_for_repacking(
     referring_table_rows: int = 10,
     with_exclusion_constraint: bool = False,
     pk_type: str = "SERIAL",
+    pk_name: str = "id",
 ) -> None:
     """
     Creates a table to repack (default: "to_repack") that has:
@@ -42,7 +43,7 @@ def create_table_for_repacking(
     cur.execute(
         dedent(f"""
         CREATE TABLE {table_name} (
-            id {pk_type} PRIMARY KEY,
+            {pk_name} {pk_type} PRIMARY KEY,
             var_with_btree VARCHAR(255),
             var_with_pattern_ops VARCHAR(255),
             int_with_check INTEGER CHECK (int_with_check >= 0),
@@ -171,13 +172,13 @@ def create_table_for_repacking(
         dedent(f"""
         CREATE TABLE referring_table (
             id SERIAL PRIMARY KEY,
-            {table_name}_id INTEGER REFERENCES {table_name}(id)
+            {table_name}_{pk_name} INTEGER REFERENCES {table_name}({pk_name})
         );
     """)
     )
     cur.execute(
         dedent(f"""
-        INSERT INTO referring_table ({table_name}_id)
+        INSERT INTO referring_table ({table_name}_{pk_name})
         SELECT generate_series(1, {referring_table_rows});
     """)
     )
@@ -185,21 +186,21 @@ def create_table_for_repacking(
         dedent(f"""
         CREATE TABLE not_valid_referring_table (
             id SERIAL PRIMARY KEY,
-            {table_name}_id INTEGER
+            {table_name}_{pk_name} INTEGER
         );
     """)
     )
     cur.execute(
         dedent(f"""
         ALTER TABLE not_valid_referring_table ADD CONSTRAINT not_valid_referring
-            FOREIGN KEY ({table_name}_id)
-            REFERENCES {table_name}(id)
+            FOREIGN KEY ({table_name}_{pk_name})
+            REFERENCES {table_name}({pk_name})
             NOT VALID;
     """)
     )
     cur.execute(
         dedent(f"""
-        INSERT INTO not_valid_referring_table ({table_name}_id)
+        INSERT INTO not_valid_referring_table ({table_name}_{pk_name})
         SELECT generate_series(1, {referring_table_rows});
     """)
     )

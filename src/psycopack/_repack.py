@@ -135,6 +135,21 @@ class Repack:
             repacked_name=self.repacked_name,
             repacked_trigger=self.repacked_trigger,
         )
+        self._pk_column = ""
+
+    @property
+    def pk_column(self) -> str:
+        """
+        Method to cache the name of the pk column in the instance as to avoid
+        calling introspection queries multiple times.
+        """
+        if self._pk_column:
+            return self._pk_column
+        pk_info = self.introspector.get_primary_key_info(table=self.table)
+        assert pk_info is not None
+        assert len(pk_info.columns) == 1
+        self._pk_column = pk_info.columns[0]
+        return self._pk_column
 
     def full(self) -> None:
         """
@@ -202,7 +217,7 @@ class Repack:
             )
             pk_column = pk_info.columns[0]
             pk_data_type = pk_info.data_types[0]
-            if pk_column != "id" or pk_data_type not in supported_pk_data_types:
+            if pk_data_type not in supported_pk_data_types:
                 raise UnsupportedPrimaryKey(
                     f"Psycopack only supports primary key columns called 'id' "
                     f"that are in the supported types: {supported_pk_data_types}. "
@@ -266,19 +281,25 @@ class Repack:
             base_table=self.table, copy_table=self.copy_table
         )
 
-        # The PK (and the implicit index create from it) are necessary for the
+        # The PK (and the implicit index created from it) are necessary for the
         # triggers to perform index lookups when writing to the table.
-        self.command.add_pk(table=self.copy_table)
+        self.command.add_pk(table=self.copy_table, pk_column=self.pk_column)
 
         if self.convert_pk_to_bigint:
-            self.command.convert_pk_to_bigint(table=self.copy_table, seq=self.id_seq)
+            self.command.convert_pk_to_bigint(
+                table=self.copy_table,
+                seq=self.id_seq,
+                pk_column=self.pk_column,
+            )
 
         pk_info = self.introspector.get_primary_key_info(table=self.table)
         assert pk_info is not None and len(pk_info.columns) == 1
 
         if pk_info.identity_type:
             self.command.set_generated_identity(
-                table=self.copy_table, always=(pk_info.identity_type == "a")
+                table=self.copy_table,
+                always=(pk_info.identity_type == "a"),
+                pk_column=self.pk_column,
             )
         else:
             # Create a new sequence for the copied table's id column so that it
@@ -290,7 +311,11 @@ class Repack:
                 seq=self.id_seq,
                 bigint=("big" in pk_info.data_types[0].lower()),
             )
-            self.command.set_table_id_seq(table=self.copy_table, seq=self.id_seq)
+            self.command.set_table_id_seq(
+                table=self.copy_table,
+                seq=self.id_seq,
+                pk_column=self.pk_column,
+            )
 
         # If the original table has exclusion constraints, they need to be
         # replicated here when setting up the copy table. This is a limitation
@@ -325,6 +350,7 @@ class Repack:
             table_from=self.table,
             table_to=self.copy_table,
             columns=self.introspector.get_table_columns(table=self.table),
+            pk_column=self.pk_column,
         )
 
     def _create_copy_trigger(self) -> None:
@@ -334,6 +360,7 @@ class Repack:
             function=self.function,
             table_from=self.table,
             table_to=self.copy_table,
+            pk_column=self.pk_column,
         )
 
     def _create_backfill_log(self) -> None:
@@ -341,12 +368,15 @@ class Repack:
         self.command.create_backfill_log(table=self.backfill_log)
 
     def _populate_backfill_log(self) -> None:
-        min_id, max_id = self.introspector.get_min_and_max_id(table=self.table)
+        min_pk, max_pk = self.introspector.get_min_and_max_pk(
+            table=self.table,
+            pk_column=self.pk_column,
+        )
         self.command.populate_backfill_log(
             table=self.backfill_log,
             batch_size=self.batch_size,
-            min_id=min_id,
-            max_id=max_id,
+            min_pk=min_pk,
+            max_pk=max_pk,
         )
 
     def _perform_backfill(self) -> None:
@@ -523,6 +553,7 @@ class Repack:
                     table_from=self.table,
                     table_to=self.repacked_name,
                     columns=self.introspector.get_table_columns(table=self.table),
+                    pk_column=self.pk_column,
                 )
                 self.command.drop_trigger_if_exists(
                     table=self.table, trigger=self.repacked_trigger
@@ -532,6 +563,7 @@ class Repack:
                     function=self.repacked_function,
                     table_from=self.table,
                     table_to=self.repacked_name,
+                    pk_column=self.pk_column,
                 )
 
     def revert_swap(self) -> None:
