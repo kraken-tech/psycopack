@@ -623,11 +623,6 @@ class Repack:
 
     def clean_up(self) -> None:
         with self.tracker.track(_tracker.Stage.CLEAN_UP):
-            self.command.drop_trigger_if_exists(
-                table=self.table, trigger=self.repacked_trigger
-            )
-            self.command.drop_function_if_exists(function=self.repacked_function)
-
             # Rename indexes using a dict data structure to hold names from/to.
             # Also deal with duplicated indexes in the same column.
             indexes: dict[str, list[dict[str, str]]] = defaultdict(list)
@@ -644,19 +639,6 @@ class Repack:
                 idx_data = next(idx for idx in indexes[sql] if "idx_to" not in idx)
                 idx_data["idx_to"] = idx.name
 
-            for idx_sql in indexes:
-                for index_data in indexes[idx_sql]:
-                    self.command.rename_index(
-                        idx_from=index_data["idx_from"],
-                        idx_to=_identifiers.build_postgres_identifier(
-                            [index_data["idx_from"]], "idx_from"
-                        ),
-                    )
-                    self.command.rename_index(
-                        idx_from=index_data["idx_to"],
-                        idx_to=index_data["idx_from"],
-                    )
-
             # Rename foreign keys from other tables using a dict data structure to
             # hold names from/to.
             table_to_fk: dict[str, dict[str, str]] = {}
@@ -666,25 +648,48 @@ class Repack:
             for fk in self.introspector.get_referring_fks(table=self.table):
                 table_to_fk[fk.referring_table]["cons_to"] = fk.name
 
-            for table in table_to_fk:
-                fk_data = table_to_fk[table]
-                self.command.rename_constraint(
-                    table=table,
-                    cons_from=fk_data["cons_from"],
-                    cons_to=_identifiers.build_postgres_identifier(
-                        [fk_data["cons_from"]], "const_from"
-                    ),
-                )
-                self.command.rename_constraint(
-                    table=table,
-                    cons_from=fk_data["cons_to"],
-                    cons_to=fk_data["cons_from"],
-                )
+            referring_fks = self.introspector.get_referring_fks(
+                table=self.repacked_name
+            )
 
-            for fk in self.introspector.get_referring_fks(table=self.repacked_name):
-                self.command.drop_constraint(
-                    table=fk.referring_table, constraint=fk.name
+            with self.command.db_transaction():
+                self.command.drop_trigger_if_exists(
+                    table=self.table, trigger=self.repacked_trigger
                 )
+                self.command.drop_function_if_exists(function=self.repacked_function)
 
-            self.command.drop_table_if_exists(table=self.repacked_name)
-            self.command.drop_table_if_exists(table=self.backfill_log)
+                for idx_sql in indexes:
+                    for index_data in indexes[idx_sql]:
+                        self.command.rename_index(
+                            idx_from=index_data["idx_from"],
+                            idx_to=_identifiers.build_postgres_identifier(
+                                [index_data["idx_from"]], "idx_from"
+                            ),
+                        )
+                        self.command.rename_index(
+                            idx_from=index_data["idx_to"],
+                            idx_to=index_data["idx_from"],
+                        )
+
+                for table in table_to_fk:
+                    fk_data = table_to_fk[table]
+                    self.command.rename_constraint(
+                        table=table,
+                        cons_from=fk_data["cons_from"],
+                        cons_to=_identifiers.build_postgres_identifier(
+                            [fk_data["cons_from"]], "const_from"
+                        ),
+                    )
+                    self.command.rename_constraint(
+                        table=table,
+                        cons_from=fk_data["cons_to"],
+                        cons_to=fk_data["cons_from"],
+                    )
+
+                for fk in referring_fks:
+                    self.command.drop_constraint(
+                        table=fk.referring_table, constraint=fk.name
+                    )
+
+                self.command.drop_table_if_exists(table=self.repacked_name)
+                self.command.drop_table_if_exists(table=self.backfill_log)
