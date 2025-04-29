@@ -489,10 +489,19 @@ class Repack:
         self.cur.execute(f"SET lock_timeout = '{lock_before}';")
 
     def _create_unique_constraints(self) -> None:
-        for cons in self.introspector.get_constraints(table=self.table, types=["u"]):
+        table_constraints = self.introspector.get_constraints(
+            table=self.table, types=["u"]
+        )
+        copy_constraints = self.introspector.get_constraints(
+            table=self.copy_table, types=["u"]
+        )
+        for cons in table_constraints:
             constraint_name = _identifiers.build_postgres_identifier(
                 [cons.name], "psycopack"
             )
+            if any(c.name == constraint_name for c in copy_constraints):
+                # This constraint has already been created by a previous run.
+                continue
             if not cons.is_validated:  # pragma: no cover
                 # TODO: Gotta handle that case later
                 continue
