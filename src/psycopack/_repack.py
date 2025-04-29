@@ -470,8 +470,10 @@ class Repack:
         for index in indexes:
             name = index.name
             sql = index.definition
-            sql = sql.replace("CREATE INDEX", "CREATE INDEX CONCURRENTLY")
-            sql = sql.replace("CREATE UNIQUE INDEX", "CREATE UNIQUE INDEX CONCURRENTLY")
+            sql = sql.replace("CREATE INDEX", "CREATE INDEX CONCURRENTLY IF NOT EXISTS")
+            sql = sql.replace(
+                "CREATE UNIQUE INDEX", "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS"
+            )
             sql_arr = sql.split(" ON")
             new_name = _identifiers.build_postgres_identifier([name], "psycopack")
             sql_arr[0] = sql_arr[0].replace(name, new_name)
