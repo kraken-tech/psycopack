@@ -648,10 +648,6 @@ class Repack:
             for fk in self.introspector.get_referring_fks(table=self.table):
                 table_to_fk[fk.referring_table]["cons_to"] = fk.name
 
-            referring_fks = self.introspector.get_referring_fks(
-                table=self.repacked_name
-            )
-
             with self.command.db_transaction():
                 self.command.drop_trigger_if_exists(
                     table=self.table, trigger=self.repacked_trigger
@@ -673,22 +669,14 @@ class Repack:
 
                 for table in table_to_fk:
                     fk_data = table_to_fk[table]
-                    self.command.rename_constraint(
+                    self.command.drop_constraint(
                         table=table,
-                        cons_from=fk_data["cons_from"],
-                        cons_to=_identifiers.build_postgres_identifier(
-                            [fk_data["cons_from"]], "const_from"
-                        ),
+                        constraint=fk_data["cons_from"],
                     )
                     self.command.rename_constraint(
                         table=table,
                         cons_from=fk_data["cons_to"],
                         cons_to=fk_data["cons_from"],
-                    )
-
-                for fk in referring_fks:
-                    self.command.drop_constraint(
-                        table=fk.referring_table, constraint=fk.name
                     )
 
                 self.command.drop_table_if_exists(table=self.repacked_name)
