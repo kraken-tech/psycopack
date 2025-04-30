@@ -437,10 +437,9 @@ class Command:
         second_seq = self.introspector.get_pk_sequence_name(table=second_table)
         temp_seq = f"{first_seq}_temp"
 
-        with self.db_transaction():
-            self.rename_sequence(seq_from=first_seq, seq_to=temp_seq)
-            self.rename_sequence(seq_from=second_seq, seq_to=first_seq)
-            self.rename_sequence(seq_from=temp_seq, seq_to=second_seq)
+        self.rename_sequence(seq_from=first_seq, seq_to=temp_seq)
+        self.rename_sequence(seq_from=second_seq, seq_to=first_seq)
+        self.rename_sequence(seq_from=temp_seq, seq_to=second_seq)
 
     @contextmanager
     def db_transaction(self) -> Iterator[None]:
