@@ -544,19 +544,29 @@ class Repack:
                 )
 
     def _create_referring_fks(self) -> None:
-        for fk in self.introspector.get_referring_fks(table=self.table):
-            definition = fk.definition.replace(
-                f"REFERENCES {self.table}", f"REFERENCES {self.copy_table}"
-            )
+        table_fks = self.introspector.get_referring_fks(table=self.table)
+        copy_fks = self.introspector.get_referring_fks(table=self.copy_table)
+
+        for fk in table_fks:
             constraint_name = _identifiers.build_postgres_identifier(
                 [fk.name], "psycopack"
             )
-            self.command.create_not_valid_constraint_from_def(
-                table=fk.referring_table,
-                constraint=constraint_name,
-                definition=definition,
-                is_validated=fk.is_validated,
-            )
+            existing_fk = next((f for f in copy_fks if f.name == constraint_name), None)
+            if existing_fk and existing_fk.is_validated == fk.is_validated:
+                # This constraint has already been created by a previous run
+                # and exactly matches the constraint validation level from the
+                # original table.
+                continue
+            if not existing_fk:
+                definition = fk.definition.replace(
+                    f"REFERENCES {self.table}", f"REFERENCES {self.copy_table}"
+                )
+                self.command.create_not_valid_constraint_from_def(
+                    table=fk.referring_table,
+                    constraint=constraint_name,
+                    definition=definition,
+                    is_validated=fk.is_validated,
+                )
             if fk.is_validated:
                 self.command.validate_constraint(
                     table=fk.referring_table, constraint=constraint_name

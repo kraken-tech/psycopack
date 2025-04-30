@@ -442,7 +442,6 @@ def test_clean_up_finishes_the_repacking(connection: _psycopg.Connection) -> Non
         )
 
 
-@pytest.mark.skip(reason="not implemented")
 def test_sync_schemas_is_reentrant_and_idempotent(
     connection: _psycopg.Connection,
 ) -> None:
