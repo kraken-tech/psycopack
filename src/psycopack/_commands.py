@@ -1,3 +1,4 @@
+import datetime
 import hashlib
 from contextlib import contextmanager
 from textwrap import dedent
@@ -153,6 +154,7 @@ class Command:
         table_to: str,
         pk_column: str,
     ) -> None:
+        # Note: takes a ShareRowExclusiveLock on the table_from.
         self.cur.execute(
             psycopg.sql.SQL(
                 dedent("""
@@ -347,6 +349,7 @@ class Command:
         )
 
     def rename_index(self, *, idx_from: str, idx_to: str) -> None:
+        # Note: Takes a ShareUpdateExclusiveLock on idx_from
         self.cur.execute(
             psycopg.sql.SQL("ALTER INDEX {idx_from} RENAME TO {idx_to};")
             .format(
@@ -446,3 +449,12 @@ class Command:
         self.cur.execute("BEGIN;")
         yield
         self.cur.execute("COMMIT;")
+
+    @contextmanager
+    def lock_timeout(self, timeout: datetime.timedelta) -> Iterator[None]:
+        timeout_in_ms = int(timeout.total_seconds() * 1000)
+        set_sql = f"SET lock_timeout = {timeout_in_ms};"
+        reset_sql = "SET lock_timeout TO DEFAULT;"
+        self.cur.execute(set_sql)
+        yield
+        self.cur.execute(reset_sql)

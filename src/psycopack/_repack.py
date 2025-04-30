@@ -7,10 +7,8 @@
 # 3. Due to the way the backfilling works, it may affect the correlation of a
 #    certain field. TODO: Investigate if doing it the "repack" way is better in
 #    such cases.
-# 4. Add reasonable lock timeouts for operations and failure->retry routines.
-# 5. Add reasonable lock_timeout values to prevent ACCESS EXCLUSIVE queries
-#    blocking the queue by failing to acquire locks quickly.
 import dataclasses
+import datetime
 import typing
 from collections import defaultdict
 from textwrap import dedent
@@ -110,6 +108,7 @@ class Repack:
         cur: psycopg.Cursor,
         convert_pk_to_bigint: bool = False,
         post_backfill_batch_callback: PostBackfillBatchCallback | None = None,
+        lock_timeout: datetime.timedelta = datetime.timedelta(seconds=10),
     ) -> None:
         self.conn = conn
         self.cur = _cur.LoggedCursor(cur=cur)
@@ -119,7 +118,7 @@ class Repack:
         self.table = table
         self.batch_size = batch_size
         self.post_backfill_batch_callback = post_backfill_batch_callback
-
+        self.lock_timeout = lock_timeout
         self.convert_pk_to_bigint = convert_pk_to_bigint
 
         # Names for the copy table.
@@ -263,7 +262,10 @@ class Repack:
                 )
 
     def setup_repacking(self) -> None:
-        with self.tracker.track(_tracker.Stage.SETUP):
+        with (
+            self.tracker.track(_tracker.Stage.SETUP),
+            self.command.lock_timeout(self.lock_timeout),
+        ):
             self._create_copy_table()
             self._create_copy_function()
             self._create_copy_trigger()
@@ -277,9 +279,10 @@ class Repack:
     def sync_schemas(self) -> None:
         with self.tracker.track(_tracker.Stage.SYNC_SCHEMAS):
             self._create_indexes()
-            self._create_unique_constraints()
-            self._create_check_and_fk_constraints()
-            self._create_referring_fks()
+            with self.command.lock_timeout(self.lock_timeout):
+                self._create_unique_constraints()
+                self._create_check_and_fk_constraints()
+                self._create_referring_fks()
 
     def _create_copy_table(self) -> None:
         # Checks if other relating objects have FKs pointing to the copy table
@@ -462,31 +465,29 @@ class Repack:
             for index in self.introspector.get_index_def(table=self.table)
             if (not index.is_primary) and (not index.is_exclusion)
         ]
-        self.cur.execute("SHOW lock_timeout;")
-        result = self.cur.fetchone()
-        assert result is not None
-        lock_before = result[0]
-        self.cur.execute("SET lock_timeout = '0';")
-        for index in indexes:
-            name = index.name
-            sql = index.definition
-            sql = sql.replace("CREATE INDEX", "CREATE INDEX CONCURRENTLY IF NOT EXISTS")
-            sql = sql.replace(
-                "CREATE UNIQUE INDEX", "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS"
-            )
-            sql_arr = sql.split(" ON")
-            new_name = _identifiers.build_postgres_identifier([name], "psycopack")
-            sql_arr[0] = sql_arr[0].replace(name, new_name)
+        with self.command.lock_timeout(datetime.timedelta(seconds=0)):
+            for index in indexes:
+                name = index.name
+                sql = index.definition
+                sql = sql.replace(
+                    "CREATE INDEX", "CREATE INDEX CONCURRENTLY IF NOT EXISTS"
+                )
+                sql = sql.replace(
+                    "CREATE UNIQUE INDEX",
+                    "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS",
+                )
+                sql_arr = sql.split(" ON")
+                new_name = _identifiers.build_postgres_identifier([name], "psycopack")
+                sql_arr[0] = sql_arr[0].replace(name, new_name)
 
-            # Split further to handle when the column name is the same or
-            # contains the table name in it.
-            sql_arr_tmp = sql_arr[1].split("USING ")
-            sql_arr_tmp[0] = sql_arr_tmp[0].replace(self.table, self.copy_table)
-            sql_arr[1] = "USING ".join(sql_arr_tmp)
+                # Split further to handle when the column name is the same or
+                # contains the table name in it.
+                sql_arr_tmp = sql_arr[1].split("USING ")
+                sql_arr_tmp[0] = sql_arr_tmp[0].replace(self.table, self.copy_table)
+                sql_arr[1] = "USING ".join(sql_arr_tmp)
 
-            sql = " ON ".join(sql_arr)
-            self.cur.execute(sql)
-        self.cur.execute(f"SET lock_timeout = '{lock_before}';")
+                sql = " ON ".join(sql_arr)
+                self.cur.execute(sql)
 
     def _create_unique_constraints(self) -> None:
         table_constraints = self.introspector.get_constraints(
@@ -582,7 +583,10 @@ class Repack:
            both in sync, in case the changes need to be reverted.
         """
         with self.tracker.track(_tracker.Stage.SWAP):
-            with self.command.db_transaction():
+            with (
+                self.command.db_transaction(),
+                self.command.lock_timeout(self.lock_timeout),
+            ):
                 self.cur.execute(f"LOCK TABLE {self.table} IN ACCESS EXCLUSIVE MODE;")
                 self.cur.execute(
                     f"LOCK TABLE {self.copy_table} IN ACCESS EXCLUSIVE MODE;"
@@ -632,7 +636,10 @@ class Repack:
         4. Create triggers from the old table to the copy table to keep both in
            sync.
         """
-        with self.command.db_transaction():
+        with (
+            self.command.db_transaction(),
+            self.command.lock_timeout(self.lock_timeout),
+        ):
             self.tracker._revert_swap()
             self.cur.execute(f"LOCK TABLE {self.table} IN ACCESS EXCLUSIVE MODE;")
             self.cur.execute(
@@ -681,7 +688,10 @@ class Repack:
             for fk in self.introspector.get_referring_fks(table=self.table):
                 table_to_fk[fk.referring_table]["cons_to"] = fk.name
 
-            with self.command.db_transaction():
+            with (
+                self.command.db_transaction(),
+                self.command.lock_timeout(self.lock_timeout),
+            ):
                 self.command.drop_trigger_if_exists(
                     table=self.table, trigger=self.repacked_trigger
                 )

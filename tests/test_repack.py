@@ -6,6 +6,7 @@ import pytest
 from psycopack import (
     BackfillBatch,
     CompositePrimaryKey,
+    FailureDueToLockTimeout,
     InheritedTable,
     InvalidPrimaryKeyTypeForConversion,
     PrimaryKeyNotFound,
@@ -1310,3 +1311,108 @@ def test_when_post_backfill_batch_callback_is_passed(
         BackfillBatch(id=3, start=51, end=75),
         BackfillBatch(id=4, start=76, end=100),
     ]
+
+
+def test_repeat_stage_when_lock_timeout(connection: _psycopg.Connection) -> None:
+    with connection.cursor() as cur:
+        if not _psycopg.PSYCOPG_3:  # pragma: no cover
+            # https://github.com/psycopg/psycopg2/issues/941#issuecomment-864025101
+            # https://github.com/psycopg/psycopg2/issues/1305#issuecomment-866712961
+            # TODO: wrap the connection so that connection.cursor() doesn't
+            # start in a transaction. Else, this test will fail.
+            cur.execute("ABORT;")
+
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+        )
+        table_before = _collect_table_info(table="to_repack", connection=connection)
+        repack = Repack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+        )
+
+        def side_effect(*args: object, **kwargs: object) -> None:
+            repack.cur.execute("ABORT;")
+            raise _psycopg.errors.LockNotAvailable(
+                "canceling statement due to lock timeout"
+            )
+
+        # Pre-validation only uses introspection queries. There's no need for
+        # lock timeouts there.
+        repack.pre_validate()
+
+        # Setting up the copy relations may time out (specially the trigger).
+        with mock.patch.object(repack.command, "create_copy_trigger") as mocked:
+            mocked.side_effect = side_effect
+            with pytest.raises(FailureDueToLockTimeout):
+                repack.setup_repacking()
+
+        # It can be called again successfully as the function is idempotent and
+        # reentrant.
+        repack.setup_repacking()
+
+        # Backfill only performs reads and writes. There's no need for lock
+        # timeouts here.
+        repack.backfill()
+
+        # Syncing the schemas will involve firing multiple DDLs that may time
+        # out.
+        with mock.patch.object(
+            repack.command, "create_unique_constraint_using_idx"
+        ) as mocked:
+            mocked.side_effect = side_effect
+            with pytest.raises(FailureDueToLockTimeout):
+                repack.sync_schemas()
+
+        # It can be called again successfully as the function is idempotent and
+        # reentrant.
+        repack.sync_schemas()
+
+        # Swapping also has many DDLs that may time out as it is moving the
+        # tables around.
+        with mock.patch.object(repack.command, "rename_table") as mocked:
+            mocked.side_effect = side_effect
+            with pytest.raises(FailureDueToLockTimeout):
+                repack.swap()
+
+        # It can be called again successfully as the function is idempotent and
+        # reentrant (it also happens inside a transaction).
+        repack.swap()
+
+        # Reverting the swap is the same as the swap but with the opposite
+        # relations.
+        with mock.patch.object(repack.command, "rename_table") as mocked:
+            mocked.side_effect = side_effect
+            with pytest.raises(_psycopg.errors.LockNotAvailable):
+                repack.revert_swap()
+
+        # It can be called again successfully as the function is idempotent and
+        # reentrant (it also happens inside a transaction).
+        repack.revert_swap()
+
+        # Swap again so that we can proceed to the next stage.
+        repack.swap()
+
+        # The clean-up function also produces DDLs when renaming idx and
+        # constraints and those DDLs can time out.
+        with mock.patch.object(repack.command, "rename_index") as mocked:
+            mocked.side_effect = side_effect
+            with pytest.raises(FailureDueToLockTimeout):
+                repack.clean_up()
+
+        # It can be called again successfully as the function is idempotent and
+        # reentrant (it also happens inside a transaction).
+        repack.clean_up()
+
+        table_after = _collect_table_info(table="to_repack", connection=connection)
+        _assert_repack(
+            table_before=table_before,
+            table_after=table_after,
+            repack=repack,
+            cur=cur,
+        )
