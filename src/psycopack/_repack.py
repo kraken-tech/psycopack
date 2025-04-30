@@ -516,16 +516,28 @@ class Repack:
             )
 
     def _create_check_and_fk_constraints(self) -> None:
-        for cons in self.introspector.get_constraints(
-            table=self.table,
-            types=["c", "f"],
-        ):
-            self.command.create_not_valid_constraint_from_def(
-                table=self.copy_table,
-                constraint=cons.name,
-                definition=cons.definition,
-                is_validated=cons.is_validated,
+        table_constraints = self.introspector.get_constraints(
+            table=self.table, types=["c", "f"]
+        )
+        copy_constraints = self.introspector.get_constraints(
+            table=self.copy_table, types=["c", "f"]
+        )
+        for cons in table_constraints:
+            existing_cons = next(
+                (c for c in copy_constraints if c.name == cons.name), None
             )
+            if existing_cons and existing_cons.is_validated == cons.is_validated:
+                # This constraint has already been created by a previous run
+                # and exactly matches the constraint validation level from the
+                # original table.
+                continue
+            if not existing_cons:
+                self.command.create_not_valid_constraint_from_def(
+                    table=self.copy_table,
+                    constraint=cons.name,
+                    definition=cons.definition,
+                    is_validated=cons.is_validated,
+                )
             if cons.is_validated:
                 self.command.validate_constraint(
                     table=self.copy_table, constraint=cons.name
