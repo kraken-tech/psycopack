@@ -1,4 +1,5 @@
 import dataclasses
+from unittest import mock
 
 import pytest
 
@@ -432,6 +433,81 @@ def test_clean_up_finishes_the_repacking(connection: _psycopg.Connection) -> Non
         repack.sync_schemas()
         repack.swap()
         repack.clean_up()
+        table_after = _collect_table_info(table="to_repack", connection=connection)
+        _assert_repack(
+            table_before=table_before,
+            table_after=table_after,
+            repack=repack,
+            cur=cur,
+        )
+
+
+@pytest.mark.skip(reason="not implemented")
+def test_sync_schemas_is_reentrant_and_idempotent(
+    connection: _psycopg.Connection,
+) -> None:
+    with connection.cursor() as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+        )
+        table_before = _collect_table_info(table="to_repack", connection=connection)
+        repack = Repack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+        )
+        repack.pre_validate()
+        repack.setup_repacking()
+        repack.backfill()
+
+        with mock.patch.object(repack, "_create_unique_constraints") as mocked:
+            # An expection on _create_unique_constraints means that all indexes
+            # would've been created already. So the second run should pick up
+            # those indexes instead of recreating them.
+            mocked.side_effect = Exception("BANG")
+            with pytest.raises(Exception, match="BANG"):
+                repack.sync_schemas()
+
+        with mock.patch.object(repack, "_create_check_and_fk_constraints") as mocked:
+            # An expection on _create_check_and_fk_constraints means that all
+            # unique constraints would've been created already. So the second
+            # run should pick up those constraints instead of recreating them.
+            mocked.side_effect = Exception("BAANG")
+            with pytest.raises(Exception, match="BAANG"):
+                repack.sync_schemas()
+
+        with mock.patch.object(repack.command, "validate_constraint") as mocked:
+            # An exception on validate_constraint means that one of the check
+            # constraints wouldn't be validated and the process would fail
+            # right there. This would leave a NOT VALID constraint behind. This
+            # should be able to be fixed next time sync_schema() runs.
+            mocked.side_effect = Exception("BAAANG")
+            with pytest.raises(Exception, match="BAAANG"):
+                repack.sync_schemas()
+
+        with mock.patch.object(repack, "_create_referring_fks") as mocked:
+            # An expection on _create_referring_fks means that all check and fk
+            # constraints would've been created already. So the second run
+            # should pick up those constraints instead of recreating them.
+            mocked.side_effect = Exception("BAAAANG")
+            with pytest.raises(Exception, match="BAAAANG"):
+                repack.sync_schemas()
+
+        with mock.patch.object(repack.command, "validate_constraint") as mocked:
+            # An exception on validate_constraint means that one of the
+            # referring fks wouldn't be validated and the process would fail
+            # right there. This would leave a NOT VALID fk constraint behind.
+            # This should be able to be fixed next time sync_schema() runs.
+            mocked.side_effect = Exception("BAAAAANG")
+            with pytest.raises(Exception, match="BAAAAANG"):
+                repack.sync_schemas()
+
+        repack.sync_schemas()
+        repack.full()
         table_after = _collect_table_info(table="to_repack", connection=connection)
         _assert_repack(
             table_before=table_before,
