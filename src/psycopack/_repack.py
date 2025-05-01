@@ -7,10 +7,8 @@
 # 3. Due to the way the backfilling works, it may affect the correlation of a
 #    certain field. TODO: Investigate if doing it the "repack" way is better in
 #    such cases.
-# 4. Add reasonable lock timeouts for operations and failure->retry routines.
-# 5. Add reasonable lock_timeout values to prevent ACCESS EXCLUSIVE queries
-#    blocking the queue by failing to acquire locks quickly.
 import dataclasses
+import datetime
 import typing
 from collections import defaultdict
 from textwrap import dedent
@@ -110,6 +108,7 @@ class Repack:
         cur: psycopg.Cursor,
         convert_pk_to_bigint: bool = False,
         post_backfill_batch_callback: PostBackfillBatchCallback | None = None,
+        lock_timeout: datetime.timedelta = datetime.timedelta(seconds=10),
     ) -> None:
         self.conn = conn
         self.cur = _cur.LoggedCursor(cur=cur)
@@ -119,7 +118,7 @@ class Repack:
         self.table = table
         self.batch_size = batch_size
         self.post_backfill_batch_callback = post_backfill_batch_callback
-
+        self.lock_timeout = lock_timeout
         self.convert_pk_to_bigint = convert_pk_to_bigint
 
         # Names for the copy table.
@@ -263,7 +262,10 @@ class Repack:
                 )
 
     def setup_repacking(self) -> None:
-        with self.tracker.track(_tracker.Stage.SETUP):
+        with (
+            self.tracker.track(_tracker.Stage.SETUP),
+            self.command.lock_timeout(self.lock_timeout),
+        ):
             self._create_copy_table()
             self._create_copy_function()
             self._create_copy_trigger()
@@ -277,9 +279,10 @@ class Repack:
     def sync_schemas(self) -> None:
         with self.tracker.track(_tracker.Stage.SYNC_SCHEMAS):
             self._create_indexes()
-            self._create_unique_constraints()
-            self._create_check_and_fk_constraints()
-            self._create_referring_fks()
+            with self.command.lock_timeout(self.lock_timeout):
+                self._create_unique_constraints()
+                self._create_check_and_fk_constraints()
+                self._create_referring_fks()
 
     def _create_copy_table(self) -> None:
         # Checks if other relating objects have FKs pointing to the copy table
@@ -462,35 +465,44 @@ class Repack:
             for index in self.introspector.get_index_def(table=self.table)
             if (not index.is_primary) and (not index.is_exclusion)
         ]
-        self.cur.execute("SHOW lock_timeout;")
-        result = self.cur.fetchone()
-        assert result is not None
-        lock_before = result[0]
-        self.cur.execute("SET lock_timeout = '0';")
-        for index in indexes:
-            name = index.name
-            sql = index.definition
-            sql = sql.replace("CREATE INDEX", "CREATE INDEX CONCURRENTLY")
-            sql = sql.replace("CREATE UNIQUE INDEX", "CREATE UNIQUE INDEX CONCURRENTLY")
-            sql_arr = sql.split(" ON")
-            new_name = _identifiers.build_postgres_identifier([name], "psycopack")
-            sql_arr[0] = sql_arr[0].replace(name, new_name)
+        with self.command.lock_timeout(datetime.timedelta(seconds=0)):
+            for index in indexes:
+                name = index.name
+                sql = index.definition
+                sql = sql.replace(
+                    "CREATE INDEX", "CREATE INDEX CONCURRENTLY IF NOT EXISTS"
+                )
+                sql = sql.replace(
+                    "CREATE UNIQUE INDEX",
+                    "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS",
+                )
+                sql_arr = sql.split(" ON")
+                new_name = _identifiers.build_postgres_identifier([name], "psycopack")
+                sql_arr[0] = sql_arr[0].replace(name, new_name)
 
-            # Split further to handle when the column name is the same or
-            # contains the table name in it.
-            sql_arr_tmp = sql_arr[1].split("USING ")
-            sql_arr_tmp[0] = sql_arr_tmp[0].replace(self.table, self.copy_table)
-            sql_arr[1] = "USING ".join(sql_arr_tmp)
+                # Split further to handle when the column name is the same or
+                # contains the table name in it.
+                sql_arr_tmp = sql_arr[1].split("USING ")
+                sql_arr_tmp[0] = sql_arr_tmp[0].replace(self.table, self.copy_table)
+                sql_arr[1] = "USING ".join(sql_arr_tmp)
 
-            sql = " ON ".join(sql_arr)
-            self.cur.execute(sql)
-        self.cur.execute(f"SET lock_timeout = '{lock_before}';")
+                sql = " ON ".join(sql_arr)
+                self.cur.execute(sql)
 
     def _create_unique_constraints(self) -> None:
-        for cons in self.introspector.get_constraints(table=self.table, types=["u"]):
+        table_constraints = self.introspector.get_constraints(
+            table=self.table, types=["u"]
+        )
+        copy_constraints = self.introspector.get_constraints(
+            table=self.copy_table, types=["u"]
+        )
+        for cons in table_constraints:
             constraint_name = _identifiers.build_postgres_identifier(
                 [cons.name], "psycopack"
             )
+            if any(c.name == constraint_name for c in copy_constraints):
+                # This constraint has already been created by a previous run.
+                continue
             if not cons.is_validated:  # pragma: no cover
                 # TODO: Gotta handle that case later
                 continue
@@ -505,35 +517,57 @@ class Repack:
             )
 
     def _create_check_and_fk_constraints(self) -> None:
-        for cons in self.introspector.get_constraints(
-            table=self.table,
-            types=["c", "f"],
-        ):
-            self.command.create_not_valid_constraint_from_def(
-                table=self.copy_table,
-                constraint=cons.name,
-                definition=cons.definition,
-                is_validated=cons.is_validated,
+        table_constraints = self.introspector.get_constraints(
+            table=self.table, types=["c", "f"]
+        )
+        copy_constraints = self.introspector.get_constraints(
+            table=self.copy_table, types=["c", "f"]
+        )
+        for cons in table_constraints:
+            existing_cons = next(
+                (c for c in copy_constraints if c.name == cons.name), None
             )
+            if existing_cons and existing_cons.is_validated == cons.is_validated:
+                # This constraint has already been created by a previous run
+                # and exactly matches the constraint validation level from the
+                # original table.
+                continue
+            if not existing_cons:
+                self.command.create_not_valid_constraint_from_def(
+                    table=self.copy_table,
+                    constraint=cons.name,
+                    definition=cons.definition,
+                    is_validated=cons.is_validated,
+                )
             if cons.is_validated:
                 self.command.validate_constraint(
                     table=self.copy_table, constraint=cons.name
                 )
 
     def _create_referring_fks(self) -> None:
-        for fk in self.introspector.get_referring_fks(table=self.table):
-            definition = fk.definition.replace(
-                f"REFERENCES {self.table}", f"REFERENCES {self.copy_table}"
-            )
+        table_fks = self.introspector.get_referring_fks(table=self.table)
+        copy_fks = self.introspector.get_referring_fks(table=self.copy_table)
+
+        for fk in table_fks:
             constraint_name = _identifiers.build_postgres_identifier(
                 [fk.name], "psycopack"
             )
-            self.command.create_not_valid_constraint_from_def(
-                table=fk.referring_table,
-                constraint=constraint_name,
-                definition=definition,
-                is_validated=fk.is_validated,
-            )
+            existing_fk = next((f for f in copy_fks if f.name == constraint_name), None)
+            if existing_fk and existing_fk.is_validated == fk.is_validated:
+                # This constraint has already been created by a previous run
+                # and exactly matches the constraint validation level from the
+                # original table.
+                continue
+            if not existing_fk:
+                definition = fk.definition.replace(
+                    f"REFERENCES {self.table}", f"REFERENCES {self.copy_table}"
+                )
+                self.command.create_not_valid_constraint_from_def(
+                    table=fk.referring_table,
+                    constraint=constraint_name,
+                    definition=definition,
+                    is_validated=fk.is_validated,
+                )
             if fk.is_validated:
                 self.command.validate_constraint(
                     table=fk.referring_table, constraint=constraint_name
@@ -549,7 +583,10 @@ class Repack:
            both in sync, in case the changes need to be reverted.
         """
         with self.tracker.track(_tracker.Stage.SWAP):
-            with self.command.db_transaction():
+            with (
+                self.command.db_transaction(),
+                self.command.lock_timeout(self.lock_timeout),
+            ):
                 self.cur.execute(f"LOCK TABLE {self.table} IN ACCESS EXCLUSIVE MODE;")
                 self.cur.execute(
                     f"LOCK TABLE {self.copy_table} IN ACCESS EXCLUSIVE MODE;"
@@ -599,7 +636,10 @@ class Repack:
         4. Create triggers from the old table to the copy table to keep both in
            sync.
         """
-        with self.command.db_transaction():
+        with (
+            self.command.db_transaction(),
+            self.command.lock_timeout(self.lock_timeout),
+        ):
             self.tracker._revert_swap()
             self.cur.execute(f"LOCK TABLE {self.table} IN ACCESS EXCLUSIVE MODE;")
             self.cur.execute(
@@ -623,11 +663,6 @@ class Repack:
 
     def clean_up(self) -> None:
         with self.tracker.track(_tracker.Stage.CLEAN_UP):
-            self.command.drop_trigger_if_exists(
-                table=self.table, trigger=self.repacked_trigger
-            )
-            self.command.drop_function_if_exists(function=self.repacked_function)
-
             # Rename indexes using a dict data structure to hold names from/to.
             # Also deal with duplicated indexes in the same column.
             indexes: dict[str, list[dict[str, str]]] = defaultdict(list)
@@ -644,19 +679,6 @@ class Repack:
                 idx_data = next(idx for idx in indexes[sql] if "idx_to" not in idx)
                 idx_data["idx_to"] = idx.name
 
-            for idx_sql in indexes:
-                for index_data in indexes[idx_sql]:
-                    self.command.rename_index(
-                        idx_from=index_data["idx_from"],
-                        idx_to=_identifiers.build_postgres_identifier(
-                            [index_data["idx_from"]], "idx_from"
-                        ),
-                    )
-                    self.command.rename_index(
-                        idx_from=index_data["idx_to"],
-                        idx_to=index_data["idx_from"],
-                    )
-
             # Rename foreign keys from other tables using a dict data structure to
             # hold names from/to.
             table_to_fk: dict[str, dict[str, str]] = {}
@@ -666,25 +688,39 @@ class Repack:
             for fk in self.introspector.get_referring_fks(table=self.table):
                 table_to_fk[fk.referring_table]["cons_to"] = fk.name
 
-            for table in table_to_fk:
-                fk_data = table_to_fk[table]
-                self.command.rename_constraint(
-                    table=table,
-                    cons_from=fk_data["cons_from"],
-                    cons_to=_identifiers.build_postgres_identifier(
-                        [fk_data["cons_from"]], "const_from"
-                    ),
+            with (
+                self.command.db_transaction(),
+                self.command.lock_timeout(self.lock_timeout),
+            ):
+                self.command.drop_trigger_if_exists(
+                    table=self.table, trigger=self.repacked_trigger
                 )
-                self.command.rename_constraint(
-                    table=table,
-                    cons_from=fk_data["cons_to"],
-                    cons_to=fk_data["cons_from"],
-                )
+                self.command.drop_function_if_exists(function=self.repacked_function)
 
-            for fk in self.introspector.get_referring_fks(table=self.repacked_name):
-                self.command.drop_constraint(
-                    table=fk.referring_table, constraint=fk.name
-                )
+                for idx_sql in indexes:
+                    for index_data in indexes[idx_sql]:
+                        self.command.rename_index(
+                            idx_from=index_data["idx_from"],
+                            idx_to=_identifiers.build_postgres_identifier(
+                                [index_data["idx_from"]], "idx_from"
+                            ),
+                        )
+                        self.command.rename_index(
+                            idx_from=index_data["idx_to"],
+                            idx_to=index_data["idx_from"],
+                        )
 
-            self.command.drop_table_if_exists(table=self.repacked_name)
-            self.command.drop_table_if_exists(table=self.backfill_log)
+                for table in table_to_fk:
+                    fk_data = table_to_fk[table]
+                    self.command.drop_constraint(
+                        table=table,
+                        constraint=fk_data["cons_from"],
+                    )
+                    self.command.rename_constraint(
+                        table=table,
+                        cons_from=fk_data["cons_to"],
+                        cons_to=fk_data["cons_from"],
+                    )
+
+                self.command.drop_table_if_exists(table=self.repacked_name)
+                self.command.drop_table_if_exists(table=self.backfill_log)

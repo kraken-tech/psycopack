@@ -15,12 +15,14 @@ from ._repack import (
     TableIsEmpty,
     UnsupportedPrimaryKey,
 )
+from ._tracker import FailureDueToLockTimeout
 
 
 __all__ = (
     "BackfillBatch",
     "BaseRepackError",
     "CompositePrimaryKey",
+    "FailureDueToLockTimeout",
     "InheritedTable",
     "InvalidPrimaryKeyTypeForConversion",
     "PrimaryKeyNotFound",

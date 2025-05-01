@@ -44,6 +44,10 @@ class CannotRevertSwap(TrackerException):
     pass
 
 
+class FailureDueToLockTimeout(TrackerException):
+    pass
+
+
 @dataclasses.dataclass
 class StageInfo:
     name: str
@@ -105,8 +109,16 @@ class Tracker:
         with self.command.session_lock(name=self.tracker_lock):
             self._ensure_tracker_table_exists(stage=stage)
             self._validate_stage(stage=stage)
-            yield
-            self._finish_stage(stage=stage)
+            try:
+                yield
+                self._finish_stage(stage=stage)
+            except psycopg.errors.LockNotAvailable as exc:
+                raise FailureDueToLockTimeout(
+                    f"The stage {stage} failed to complete due to a lock "
+                    f"timeout event. Please try to run this same stage again "
+                    f"when the table is less busy, or alternatively choose a "
+                    f"larger lock timeout value."
+                ) from exc
 
     def get_current_stage(self) -> Stage:
         with self.command.session_lock(name=self.tracker_lock):
