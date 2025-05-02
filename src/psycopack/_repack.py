@@ -53,6 +53,10 @@ class InvalidPrimaryKeyTypeForConversion(BaseRepackError):
     pass
 
 
+class InvalidStageForReset(BaseRepackError):
+    pass
+
+
 @dataclasses.dataclass
 class BackfillBatch:
     id: int
@@ -97,6 +101,11 @@ class Repack:
         7. clean_up(): Drops the old table. This is non-recoverable. Make
            sure you only call this once you validated the table has been
            repacked adequately.
+
+    - Additional: Reset routines.
+        1. reset(): Drops all internal objects created by Psycopack and leaves
+           the database in the same state it was before running any of the
+           Psycopack functions above.
     """
 
     def __init__(
@@ -435,6 +444,34 @@ class Repack:
 
                 self.command.drop_table_if_exists(table=self.repacked_name)
                 self.command.drop_table_if_exists(table=self.backfill_log)
+
+    def reset(self) -> None:
+        current_stage = self.tracker.get_current_stage()
+        if current_stage == _tracker.Stage.PRE_VALIDATION:
+            raise InvalidStageForReset(
+                "Psycopack hasn't run yet. There is no need to call reset."
+            )
+        if current_stage == _tracker.Stage.CLEAN_UP:
+            raise InvalidStageForReset(
+                f"Psycopack cannot reset from the CLEAN_UP stage. At this "
+                f"point the table {self.table} has already been swapped and "
+                f"cannot be reset. Try performing a revert_swap before trying "
+                f"to reset the whole psycopack process."
+            )
+
+        with self.command.db_transaction():
+            if self.introspector.get_table_oid(table=self.copy_table):
+                fks = self.introspector.get_referring_fks(table=self.copy_table)
+                for fk in fks:
+                    self.command.drop_constraint(
+                        table=fk.referring_table, constraint=fk.name
+                    )
+            self.command.drop_trigger_if_exists(table=self.table, trigger=self.trigger)
+            self.command.drop_function_if_exists(function=self.function)
+            self.command.drop_table_if_exists(table=self.backfill_log)
+            self.command.drop_table_if_exists(table=self.copy_table)
+            self.command.drop_sequence_if_exists(seq=self.id_seq)
+            self.command.drop_table_if_exists(table=self.tracker.tracker_table)
 
     def _create_copy_table(self) -> None:
         # Checks if other relating objects have FKs pointing to the copy table

@@ -9,6 +9,7 @@ from psycopack import (
     FailureDueToLockTimeout,
     InheritedTable,
     InvalidPrimaryKeyTypeForConversion,
+    InvalidStageForReset,
     PrimaryKeyNotFound,
     Repack,
     TableDoesNotExist,
@@ -88,6 +89,17 @@ def _get_function_info(repack: Repack, cur: _psycopg.Cursor) -> _FunctionInfo:
     )
 
 
+@dataclasses.dataclass
+class _SequenceInfo:
+    sequence_exists: bool
+
+
+def _get_sequence_info(repack: Repack, cur: _psycopg.Cursor) -> _SequenceInfo:
+    cur.execute(f"SELECT 1 FROM pg_sequences WHERE sequencename = '{repack.id_seq}'")
+    sequence_exists = cur.fetchone() is not None
+    return _SequenceInfo(sequence_exists=sequence_exists)
+
+
 def _assert_repack(
     table_before: _TableInfo,
     table_after: _TableInfo,
@@ -111,6 +123,14 @@ def _assert_repack(
     assert function_info.repacked_function_exists is False
 
     # The tracker table itself will also be deleted after the clean up process.
+    assert repack.introspector.get_table_oid(table=repack.tracker.tracker_table) is None
+
+
+def _assert_reset(repack: Repack, cur: _psycopg.Cursor) -> None:
+    assert _get_trigger_info(repack, cur).trigger_exists is False
+    assert _get_function_info(repack, cur).function_exists is False
+    assert _get_sequence_info(repack, cur).sequence_exists is False
+    assert repack.introspector.get_table_oid(table=repack.copy_table) is None
     assert repack.introspector.get_table_oid(table=repack.tracker.tracker_table) is None
 
 
@@ -1407,6 +1427,83 @@ def test_repeat_stage_when_lock_timeout(connection: _psycopg.Connection) -> None
 
         # It can be called again successfully as the function is idempotent and
         # reentrant (it also happens inside a transaction).
+        repack.clean_up()
+
+        table_after = _collect_table_info(table="to_repack", connection=connection)
+        _assert_repack(
+            table_before=table_before,
+            table_after=table_after,
+            repack=repack,
+            cur=cur,
+        )
+
+
+def test_reset(connection: _psycopg.Connection) -> None:
+    with connection.cursor() as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+        )
+        table_before = _collect_table_info(table="to_repack", connection=connection)
+        repack = Repack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+        )
+        # Psycopack hasn't run yet, no reason to reset.
+        with pytest.raises(InvalidStageForReset, match="Psycopack hasn't run yet"):
+            repack.reset()
+
+        # Resetting after pre-validate
+        repack.pre_validate()
+        repack.reset()
+        _assert_reset(repack, cur)
+
+        # Resetting after setup
+        repack.pre_validate()
+        repack.setup_repacking()
+        repack.reset()
+        _assert_reset(repack, cur)
+
+        # Resetting after backfill
+        repack.pre_validate()
+        repack.setup_repacking()
+        repack.backfill()
+        repack.reset()
+        _assert_reset(repack, cur)
+
+        # Resetting after sync_schema
+        repack.pre_validate()
+        repack.setup_repacking()
+        repack.backfill()
+        repack.sync_schemas()
+        repack.reset()
+        _assert_reset(repack, cur)
+
+        # Resetting after swap results in error
+        repack.pre_validate()
+        repack.setup_repacking()
+        repack.backfill()
+        repack.sync_schemas()
+        repack.swap()
+        with pytest.raises(InvalidStageForReset, match="reset from the CLEAN_UP stage"):
+            repack.reset()
+
+        # But if the swap is reverted, all should be good.
+        repack.revert_swap()
+        repack.reset()
+        _assert_reset(repack, cur)
+
+        # Run everything from scratch to check no malfunction has arised from
+        # any reset.
+        repack.pre_validate()
+        repack.setup_repacking()
+        repack.backfill()
+        repack.sync_schemas()
+        repack.swap()
         repack.clean_up()
 
         table_after = _collect_table_info(table="to_repack", connection=connection)
