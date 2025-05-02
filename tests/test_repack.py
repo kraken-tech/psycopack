@@ -8,6 +8,7 @@ from psycopack import (
     CompositePrimaryKey,
     FailureDueToLockTimeout,
     InheritedTable,
+    InvalidIndexes,
     InvalidPrimaryKeyTypeForConversion,
     InvalidStageForReset,
     PrimaryKeyNotFound,
@@ -1513,3 +1514,30 @@ def test_reset(connection: _psycopg.Connection) -> None:
             repack=repack,
             cur=cur,
         )
+
+
+def test_when_invalid_indexes(connection: _psycopg.Connection) -> None:
+    with connection.cursor() as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+        )
+        repack = Repack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+        )
+        cur.execute("""
+            UPDATE
+              pg_index
+            SET
+              indisvalid = false
+            WHERE
+              indexrelid = 'btree_idx'::regclass;
+        """)
+
+        with pytest.raises(InvalidIndexes, match="btree_idx"):
+            repack.full()

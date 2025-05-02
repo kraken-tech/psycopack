@@ -57,6 +57,10 @@ class InvalidStageForReset(BaseRepackError):
     pass
 
 
+class InvalidIndexes(BaseRepackError):
+    pass
+
+
 @dataclasses.dataclass
 class BackfillBatch:
     id: int
@@ -268,6 +272,17 @@ class Repack:
                 raise InvalidPrimaryKeyTypeForConversion(
                     f"Psycopack can't convert the table's primary key type "
                     f"from {pk_data_type} to a larger type."
+                )
+
+            invalid_indexes: list[str] = [
+                i.name
+                for i in self.introspector.get_index_def(table=self.table)
+                if i.is_valid is False
+            ]
+            if invalid_indexes:
+                raise InvalidIndexes(
+                    f"Please either DROP or REINDEX the following indexes "
+                    f"before proceeding with Psycopack: {invalid_indexes}."
                 )
 
     def setup_repacking(self) -> None:
