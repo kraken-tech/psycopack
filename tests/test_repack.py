@@ -485,6 +485,26 @@ def test_sync_schemas_is_reentrant_and_idempotent(
         repack.setup_repacking()
         repack.backfill()
 
+        # Add an invalid index to verify it will be cleaned up.
+        cur.execute(
+            f"CREATE INDEX btree_idx_psycopack ON {repack.copy_table} (var_with_btree);"
+        )
+        cur.execute("""
+            UPDATE
+              pg_index
+            SET
+              indisvalid = false
+            WHERE
+              indexrelid = 'btree_idx_psycopack'::regclass;
+        """)
+        invalid_indexes = [
+            index
+            for index in repack.introspector.get_index_def(table=repack.copy_table)
+            if not index.is_valid
+        ]
+        assert len(invalid_indexes) == 1
+        assert invalid_indexes[0].name == "btree_idx_psycopack"
+
         with mock.patch.object(repack, "_create_unique_constraints") as mocked:
             # An expection on _create_unique_constraints means that all indexes
             # would've been created already. So the second run should pick up
@@ -535,6 +555,14 @@ def test_sync_schemas_is_reentrant_and_idempotent(
             table_after=table_after,
             repack=repack,
             cur=cur,
+        )
+        # No invalid indexes left behind in the process.
+        assert not any(
+            [
+                index
+                for index in repack.introspector.get_index_def(table="to_repack")
+                if not index.is_valid
+            ]
         )
 
 
