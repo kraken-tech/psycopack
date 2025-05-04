@@ -53,6 +53,10 @@ class InvalidPrimaryKeyTypeForConversion(BaseRepackError):
     pass
 
 
+class InvalidStageForReset(BaseRepackError):
+    pass
+
+
 @dataclasses.dataclass
 class BackfillBatch:
     id: int
@@ -97,6 +101,11 @@ class Repack:
         7. clean_up(): Drops the old table. This is non-recoverable. Make
            sure you only call this once you validated the table has been
            repacked adequately.
+
+    - Additional: Reset routines.
+        1. reset(): Drops all internal objects created by Psycopack and leaves
+           the database in the same state it was before running any of the
+           Psycopack functions above.
     """
 
     def __init__(
@@ -283,6 +292,186 @@ class Repack:
                 self._create_unique_constraints()
                 self._create_check_and_fk_constraints()
                 self._create_referring_fks()
+
+    def swap(self) -> None:
+        """
+        1. Drop the trigger (and function) that kept the copy table in sync.
+        2. Swap the primary key sequence names.
+        3. Rename the copy table (new) to the original name and the original
+           (old) table to a new temp name.
+        4. Create triggers from the new table to the old table to keep
+           both in sync, in case the changes need to be reverted.
+        """
+        with self.tracker.track(_tracker.Stage.SWAP):
+            with (
+                self.command.db_transaction(),
+                self.command.lock_timeout(self.lock_timeout),
+            ):
+                self.cur.execute(f"LOCK TABLE {self.table} IN ACCESS EXCLUSIVE MODE;")
+                self.cur.execute(
+                    f"LOCK TABLE {self.copy_table} IN ACCESS EXCLUSIVE MODE;"
+                )
+                self.command.drop_trigger_if_exists(
+                    table=self.table, trigger=self.trigger
+                )
+                self.command.drop_function_if_exists(function=self.function)
+                if self.introspector.get_pk_sequence_name(table=self.table):
+                    self.command.swap_pk_sequence_name(
+                        first_table=self.table, second_table=self.copy_table
+                    )
+                self.command.rename_table(
+                    table_from=self.table, table_to=self.repacked_name
+                )
+                self.command.rename_table(
+                    table_from=self.copy_table, table_to=self.table
+                )
+                self.command.create_copy_function(
+                    function=self.repacked_function,
+                    table_from=self.table,
+                    table_to=self.repacked_name,
+                    columns=self.introspector.get_table_columns(table=self.table),
+                    pk_column=self.pk_column,
+                )
+                self.command.drop_trigger_if_exists(
+                    table=self.table, trigger=self.repacked_trigger
+                )
+                self.command.create_copy_trigger(
+                    trigger_name=self.repacked_trigger,
+                    function=self.repacked_function,
+                    table_from=self.table,
+                    table_to=self.repacked_name,
+                    pk_column=self.pk_column,
+                )
+
+    def revert_swap(self) -> None:
+        """
+        After calling swap(), this function can be called if any issues come up
+        to revert back to using the original table instead of the repacked one.
+
+        1. Drop the trigger (and function) that kept the original table in sync
+           with the swapped-in copy.
+        2. Swap the primary key sequence names.
+        3. Rename the copy table back to its original copy name, and the
+           original table back to its original name.
+        4. Create triggers from the old table to the copy table to keep both in
+           sync.
+        """
+        with (
+            self.command.db_transaction(),
+            self.command.lock_timeout(self.lock_timeout),
+        ):
+            self.tracker._revert_swap()
+            self.cur.execute(f"LOCK TABLE {self.table} IN ACCESS EXCLUSIVE MODE;")
+            self.cur.execute(
+                f"LOCK TABLE {self.repacked_name} IN ACCESS EXCLUSIVE MODE;"
+            )
+            self.command.drop_trigger_if_exists(
+                table=self.table,
+                trigger=self.repacked_trigger,
+            )
+            self.command.drop_function_if_exists(function=self.repacked_function)
+            if self.introspector.get_pk_sequence_name(table=self.table):
+                self.command.swap_pk_sequence_name(
+                    first_table=self.table, second_table=self.repacked_name
+                )
+            self.command.rename_table(table_from=self.table, table_to=self.copy_table)
+            self.command.rename_table(
+                table_from=self.repacked_name, table_to=self.table
+            )
+            self._create_copy_function()
+            self._create_copy_trigger()
+
+    def clean_up(self) -> None:
+        with self.tracker.track(_tracker.Stage.CLEAN_UP):
+            # Rename indexes using a dict data structure to hold names from/to.
+            # Also deal with duplicated indexes in the same column.
+            indexes: dict[str, list[dict[str, str]]] = defaultdict(list)
+            for idx in self.introspector.get_index_def(table=self.repacked_name):
+                sql = idx.definition
+                sql_arr = sql.split(" ON")
+                sql = sql_arr[1].replace(self.repacked_name, self.table)
+                indexes[sql].append({"idx_from": idx.name})
+
+            for idx in self.introspector.get_index_def(table=self.table):
+                sql = idx.definition
+                sql_arr = sql.split(" ON")
+                sql = sql_arr[1]
+                idx_data = next(idx for idx in indexes[sql] if "idx_to" not in idx)
+                idx_data["idx_to"] = idx.name
+
+            # Rename foreign keys from other tables using a dict data structure to
+            # hold names from/to.
+            table_to_fk: dict[str, dict[str, str]] = {}
+            for fk in self.introspector.get_referring_fks(table=self.repacked_name):
+                table_to_fk[fk.referring_table] = {"cons_from": fk.name}
+
+            for fk in self.introspector.get_referring_fks(table=self.table):
+                table_to_fk[fk.referring_table]["cons_to"] = fk.name
+
+            with (
+                self.command.db_transaction(),
+                self.command.lock_timeout(self.lock_timeout),
+            ):
+                self.command.drop_trigger_if_exists(
+                    table=self.table, trigger=self.repacked_trigger
+                )
+                self.command.drop_function_if_exists(function=self.repacked_function)
+
+                for idx_sql in indexes:
+                    for index_data in indexes[idx_sql]:
+                        self.command.rename_index(
+                            idx_from=index_data["idx_from"],
+                            idx_to=_identifiers.build_postgres_identifier(
+                                [index_data["idx_from"]], "idx_from"
+                            ),
+                        )
+                        self.command.rename_index(
+                            idx_from=index_data["idx_to"],
+                            idx_to=index_data["idx_from"],
+                        )
+
+                for table in table_to_fk:
+                    fk_data = table_to_fk[table]
+                    self.command.drop_constraint(
+                        table=table,
+                        constraint=fk_data["cons_from"],
+                    )
+                    self.command.rename_constraint(
+                        table=table,
+                        cons_from=fk_data["cons_to"],
+                        cons_to=fk_data["cons_from"],
+                    )
+
+                self.command.drop_table_if_exists(table=self.repacked_name)
+                self.command.drop_table_if_exists(table=self.backfill_log)
+
+    def reset(self) -> None:
+        current_stage = self.tracker.get_current_stage()
+        if current_stage == _tracker.Stage.PRE_VALIDATION:
+            raise InvalidStageForReset(
+                "Psycopack hasn't run yet. There is no need to call reset."
+            )
+        if current_stage == _tracker.Stage.CLEAN_UP:
+            raise InvalidStageForReset(
+                f"Psycopack cannot reset from the CLEAN_UP stage. At this "
+                f"point the table {self.table} has already been swapped and "
+                f"cannot be reset. Try performing a revert_swap before trying "
+                f"to reset the whole psycopack process."
+            )
+
+        with self.command.db_transaction():
+            if self.introspector.get_table_oid(table=self.copy_table):
+                fks = self.introspector.get_referring_fks(table=self.copy_table)
+                for fk in fks:
+                    self.command.drop_constraint(
+                        table=fk.referring_table, constraint=fk.name
+                    )
+            self.command.drop_trigger_if_exists(table=self.table, trigger=self.trigger)
+            self.command.drop_function_if_exists(function=self.function)
+            self.command.drop_table_if_exists(table=self.backfill_log)
+            self.command.drop_table_if_exists(table=self.copy_table)
+            self.command.drop_sequence_if_exists(seq=self.id_seq)
+            self.command.drop_table_if_exists(table=self.tracker.tracker_table)
 
     def _create_copy_table(self) -> None:
         # Checks if other relating objects have FKs pointing to the copy table
@@ -572,155 +761,3 @@ class Repack:
                 self.command.validate_constraint(
                     table=fk.referring_table, constraint=constraint_name
                 )
-
-    def swap(self) -> None:
-        """
-        1. Drop the trigger (and function) that kept the copy table in sync.
-        2. Swap the primary key sequence names.
-        3. Rename the copy table (new) to the original name and the original
-           (old) table to a new temp name.
-        4. Create triggers from the new table to the old table to keep
-           both in sync, in case the changes need to be reverted.
-        """
-        with self.tracker.track(_tracker.Stage.SWAP):
-            with (
-                self.command.db_transaction(),
-                self.command.lock_timeout(self.lock_timeout),
-            ):
-                self.cur.execute(f"LOCK TABLE {self.table} IN ACCESS EXCLUSIVE MODE;")
-                self.cur.execute(
-                    f"LOCK TABLE {self.copy_table} IN ACCESS EXCLUSIVE MODE;"
-                )
-                self.command.drop_trigger_if_exists(
-                    table=self.table, trigger=self.trigger
-                )
-                self.command.drop_function_if_exists(function=self.function)
-                if self.introspector.get_pk_sequence_name(table=self.table):
-                    self.command.swap_pk_sequence_name(
-                        first_table=self.table, second_table=self.copy_table
-                    )
-                self.command.rename_table(
-                    table_from=self.table, table_to=self.repacked_name
-                )
-                self.command.rename_table(
-                    table_from=self.copy_table, table_to=self.table
-                )
-                self.command.create_copy_function(
-                    function=self.repacked_function,
-                    table_from=self.table,
-                    table_to=self.repacked_name,
-                    columns=self.introspector.get_table_columns(table=self.table),
-                    pk_column=self.pk_column,
-                )
-                self.command.drop_trigger_if_exists(
-                    table=self.table, trigger=self.repacked_trigger
-                )
-                self.command.create_copy_trigger(
-                    trigger_name=self.repacked_trigger,
-                    function=self.repacked_function,
-                    table_from=self.table,
-                    table_to=self.repacked_name,
-                    pk_column=self.pk_column,
-                )
-
-    def revert_swap(self) -> None:
-        """
-        After calling swap(), this function can be called if any issues come up
-        to revert back to using the original table instead of the repacked one.
-
-        1. Drop the trigger (and function) that kept the original table in sync
-           with the swapped-in copy.
-        2. Swap the primary key sequence names.
-        3. Rename the copy table back to its original copy name, and the
-           original table back to its original name.
-        4. Create triggers from the old table to the copy table to keep both in
-           sync.
-        """
-        with (
-            self.command.db_transaction(),
-            self.command.lock_timeout(self.lock_timeout),
-        ):
-            self.tracker._revert_swap()
-            self.cur.execute(f"LOCK TABLE {self.table} IN ACCESS EXCLUSIVE MODE;")
-            self.cur.execute(
-                f"LOCK TABLE {self.repacked_name} IN ACCESS EXCLUSIVE MODE;"
-            )
-            self.command.drop_trigger_if_exists(
-                table=self.table,
-                trigger=self.repacked_trigger,
-            )
-            self.command.drop_function_if_exists(function=self.repacked_function)
-            if self.introspector.get_pk_sequence_name(table=self.table):
-                self.command.swap_pk_sequence_name(
-                    first_table=self.table, second_table=self.repacked_name
-                )
-            self.command.rename_table(table_from=self.table, table_to=self.copy_table)
-            self.command.rename_table(
-                table_from=self.repacked_name, table_to=self.table
-            )
-            self._create_copy_function()
-            self._create_copy_trigger()
-
-    def clean_up(self) -> None:
-        with self.tracker.track(_tracker.Stage.CLEAN_UP):
-            # Rename indexes using a dict data structure to hold names from/to.
-            # Also deal with duplicated indexes in the same column.
-            indexes: dict[str, list[dict[str, str]]] = defaultdict(list)
-            for idx in self.introspector.get_index_def(table=self.repacked_name):
-                sql = idx.definition
-                sql_arr = sql.split(" ON")
-                sql = sql_arr[1].replace(self.repacked_name, self.table)
-                indexes[sql].append({"idx_from": idx.name})
-
-            for idx in self.introspector.get_index_def(table=self.table):
-                sql = idx.definition
-                sql_arr = sql.split(" ON")
-                sql = sql_arr[1]
-                idx_data = next(idx for idx in indexes[sql] if "idx_to" not in idx)
-                idx_data["idx_to"] = idx.name
-
-            # Rename foreign keys from other tables using a dict data structure to
-            # hold names from/to.
-            table_to_fk: dict[str, dict[str, str]] = {}
-            for fk in self.introspector.get_referring_fks(table=self.repacked_name):
-                table_to_fk[fk.referring_table] = {"cons_from": fk.name}
-
-            for fk in self.introspector.get_referring_fks(table=self.table):
-                table_to_fk[fk.referring_table]["cons_to"] = fk.name
-
-            with (
-                self.command.db_transaction(),
-                self.command.lock_timeout(self.lock_timeout),
-            ):
-                self.command.drop_trigger_if_exists(
-                    table=self.table, trigger=self.repacked_trigger
-                )
-                self.command.drop_function_if_exists(function=self.repacked_function)
-
-                for idx_sql in indexes:
-                    for index_data in indexes[idx_sql]:
-                        self.command.rename_index(
-                            idx_from=index_data["idx_from"],
-                            idx_to=_identifiers.build_postgres_identifier(
-                                [index_data["idx_from"]], "idx_from"
-                            ),
-                        )
-                        self.command.rename_index(
-                            idx_from=index_data["idx_to"],
-                            idx_to=index_data["idx_from"],
-                        )
-
-                for table in table_to_fk:
-                    fk_data = table_to_fk[table]
-                    self.command.drop_constraint(
-                        table=table,
-                        constraint=fk_data["cons_from"],
-                    )
-                    self.command.rename_constraint(
-                        table=table,
-                        cons_from=fk_data["cons_to"],
-                        cons_to=fk_data["cons_from"],
-                    )
-
-                self.command.drop_table_if_exists(table=self.repacked_name)
-                self.command.drop_table_if_exists(table=self.backfill_log)
