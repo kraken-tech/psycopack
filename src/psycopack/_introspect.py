@@ -11,6 +11,7 @@ class Index:
     definition: str
     is_primary: bool
     is_exclusion: bool
+    is_valid: bool
 
 
 @dataclasses.dataclass
@@ -113,7 +114,8 @@ class Introspector:
                   pg_indexes.indexname,
                   pg_indexes.indexdef,
                   pg_index.indisprimary,
-                  pg_index.indisexclusion
+                  pg_index.indisexclusion,
+                  pg_index.indisvalid
                 FROM
                   pg_indexes
                 INNER JOIN
@@ -140,8 +142,9 @@ class Introspector:
                 definition=definition,
                 is_primary=is_primary,
                 is_exclusion=is_exclusion,
+                is_valid=is_valid,
             )
-            for name, definition, is_primary, is_exclusion in results
+            for name, definition, is_primary, is_exclusion, is_valid in results
         ]
 
     def get_constraints(self, *, table: str, types: list[str]) -> list[Constraint]:
