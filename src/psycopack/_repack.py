@@ -126,7 +126,11 @@ class Repack:
         self.conn = conn
         self.cur = _cur.LoggedCursor(cur=cur)
         self.introspector = _introspect.Introspector(conn=self.conn, cur=self.cur)
-        self.command = _commands.Command(conn=self.conn, cur=self.cur)
+        self.command = _commands.Command(
+            conn=self.conn,
+            cur=self.cur,
+            introspector=self.introspector,
+        )
 
         self.table = table
         self.batch_size = batch_size
