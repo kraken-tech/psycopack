@@ -450,6 +450,13 @@ class Command:
         self.rename_sequence(seq_from=second_seq, seq_to=first_seq)
         self.rename_sequence(seq_from=temp_seq, seq_to=second_seq)
 
+    def acquire_access_exclusive_lock(self, *, table: str) -> None:
+        self.cur.execute(
+            psycopg.sql.SQL("LOCK TABLE {table} IN ACCESS EXCLUSIVE MODE;")
+            .format(table=psycopg.sql.Identifier(table))
+            .as_string(self.conn)
+        )
+
     @contextmanager
     def db_transaction(self) -> Iterator[None]:
         self.cur.execute("BEGIN;")

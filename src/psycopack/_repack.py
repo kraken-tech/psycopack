@@ -328,10 +328,8 @@ class Repack:
                 self.command.db_transaction(),
                 self.command.lock_timeout(self.lock_timeout),
             ):
-                self.cur.execute(f"LOCK TABLE {self.table} IN ACCESS EXCLUSIVE MODE;")
-                self.cur.execute(
-                    f"LOCK TABLE {self.copy_table} IN ACCESS EXCLUSIVE MODE;"
-                )
+                self.command.acquire_access_exclusive_lock(table=self.table)
+                self.command.acquire_access_exclusive_lock(table=self.copy_table)
                 self.command.drop_trigger_if_exists(
                     table=self.table, trigger=self.trigger
                 )
@@ -382,10 +380,8 @@ class Repack:
             self.command.lock_timeout(self.lock_timeout),
         ):
             self.tracker._revert_swap()
-            self.cur.execute(f"LOCK TABLE {self.table} IN ACCESS EXCLUSIVE MODE;")
-            self.cur.execute(
-                f"LOCK TABLE {self.repacked_name} IN ACCESS EXCLUSIVE MODE;"
-            )
+            self.command.acquire_access_exclusive_lock(table=self.table)
+            self.command.acquire_access_exclusive_lock(table=self.repacked_name)
             self.command.drop_trigger_if_exists(
                 table=self.table,
                 trigger=self.repacked_trigger,
