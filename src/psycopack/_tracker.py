@@ -87,12 +87,14 @@ class Tracker:
         backfill_log: str,
         repacked_name: str,
         repacked_trigger: str,
+        introspector: _introspect.Introspector,
+        command: _commands.Command,
     ) -> None:
         self.table = table
         self.conn = conn
         self.cur = cur
-        self.introspector = _introspect.Introspector(conn=self.conn, cur=self.cur)
-        self.command = _commands.Command(conn=self.conn, cur=self.cur)
+        self.introspector = introspector
+        self.command = command
 
         self.copy_table = copy_table
         self.trigger = trigger

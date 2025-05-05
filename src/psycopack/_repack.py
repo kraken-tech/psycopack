@@ -161,6 +161,8 @@ class Repack:
             backfill_log=self.backfill_log,
             repacked_name=self.repacked_name,
             repacked_trigger=self.repacked_trigger,
+            introspector=self.introspector,
+            command=self.command,
         )
         self._pk_column = ""
 
