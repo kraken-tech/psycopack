@@ -457,6 +457,40 @@ class Command:
             .as_string(self.conn)
         )
 
+    def execute_copy_function(
+        self, *, function: str, batch: _introspect.BackfillBatch
+    ) -> None:
+        self.cur.execute(
+            psycopg.sql.SQL("SELECT {function}({batch_start}, {batch_end});")
+            .format(
+                function=psycopg.sql.Identifier(function),
+                batch_start=psycopg.sql.Literal(batch.start),
+                batch_end=psycopg.sql.Literal(batch.end),
+            )
+            .as_string(self.conn)
+        )
+
+    def set_batch_to_finished(
+        self, *, table: str, batch: _introspect.BackfillBatch
+    ) -> None:
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                UPDATE
+                  {table}
+                SET
+                  finished = true
+                WHERE
+                  id = {id};
+                """)
+            )
+            .format(
+                table=psycopg.sql.Identifier(table),
+                id=psycopg.sql.Literal(batch.id),
+            )
+            .as_string(self.conn)
+        )
+
     @contextmanager
     def db_transaction(self) -> Iterator[None]:
         self.cur.execute("BEGIN;")

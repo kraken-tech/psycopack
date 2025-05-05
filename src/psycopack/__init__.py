@@ -2,8 +2,8 @@
 A customizable way to repack a table using psycopg.
 """
 
+from ._introspect import BackfillBatch
 from ._repack import (
-    BackfillBatch,
     BaseRepackError,
     CompositePrimaryKey,
     InheritedTable,
