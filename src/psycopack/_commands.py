@@ -9,10 +9,16 @@ from . import _psycopg as psycopg
 
 
 class Command:
-    def __init__(self, *, conn: psycopg.Connection, cur: _cur.LoggedCursor) -> None:
+    def __init__(
+        self,
+        *,
+        conn: psycopg.Connection,
+        cur: _cur.LoggedCursor,
+        introspector: _introspect.Introspector,
+    ) -> None:
         self.conn = conn
         self.cur = cur
-        self.introspector = _introspect.Introspector(conn=self.conn, cur=self.cur)
+        self.introspector = introspector
 
     def drop_constraint(self, *, table: str, constraint: str) -> None:
         self.cur.execute(
