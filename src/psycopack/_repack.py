@@ -661,6 +661,21 @@ class Repack:
                 )
 
     def _create_indexes(self) -> None:
+        # Start by checking if there are any invalid indexes already created
+        # due to a previous Psycopack run that failed midway through and delete
+        # them. This excludes the primary index and exclusion constraints which
+        # have been dealt with before this step.
+        invalid_indexes = [
+            index
+            for index in self.introspector.get_index_def(table=self.copy_table)
+            if (not index.is_primary)
+            and (not index.is_exclusion)
+            and (not index.is_valid)
+        ]
+        with self.command.lock_timeout(datetime.timedelta(seconds=0)):
+            for index in invalid_indexes:
+                self.cur.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {index.name};")
+
         # We already created a PK index when creating the copy table, so we'll
         # skip it here as it does not need to be recreated. The same is true
         # for indexes servicing an exclusion constraint.
