@@ -128,6 +128,7 @@ class Repack:
             conn=self.conn,
             cur=self.cur,
             introspector=self.introspector,
+            schema=schema,
         )
 
         self.table = table

@@ -15,30 +15,36 @@ class Command:
         conn: psycopg.Connection,
         cur: _cur.LoggedCursor,
         introspector: _introspect.Introspector,
+        schema: str,
     ) -> None:
         self.conn = conn
         self.cur = cur
         self.introspector = introspector
+        self.schema = schema
 
     def drop_constraint(self, *, table: str, constraint: str) -> None:
         self.cur.execute(
             psycopg.sql.SQL(
                 dedent("""
-                ALTER TABLE {table}
+                ALTER TABLE {schema}.{table}
                 DROP CONSTRAINT {constraint};
                 """)
             )
             .format(
                 table=psycopg.sql.Identifier(table),
                 constraint=psycopg.sql.Identifier(constraint),
+                schema=psycopg.sql.Identifier(self.schema),
             )
             .as_string(self.conn)
         )
 
     def drop_table_if_exists(self, *, table: str) -> None:
         self.cur.execute(
-            psycopg.sql.SQL("DROP TABLE IF EXISTS {table}")
-            .format(table=psycopg.sql.Identifier(table))
+            psycopg.sql.SQL("DROP TABLE IF EXISTS {schema}.{table}")
+            .format(
+                table=psycopg.sql.Identifier(table),
+                schema=psycopg.sql.Identifier(self.schema),
+            )
             .as_string(self.conn)
         )
 
@@ -46,33 +52,40 @@ class Command:
         self.cur.execute(
             psycopg.sql.SQL(
                 dedent("""
-                CREATE TABLE {copy_table}
-                (LIKE {table} INCLUDING DEFAULTS);
+                CREATE TABLE {schema}.{copy_table}
+                (LIKE {schema}.{table} INCLUDING DEFAULTS);
                 """)
             )
             .format(
                 table=psycopg.sql.Identifier(base_table),
                 copy_table=psycopg.sql.Identifier(copy_table),
+                schema=psycopg.sql.Identifier(self.schema),
             )
             .as_string(self.conn)
         )
 
     def drop_sequence_if_exists(self, *, seq: str) -> None:
         self.cur.execute(
-            psycopg.sql.SQL("DROP SEQUENCE IF EXISTS {seq};")
-            .format(seq=psycopg.sql.Identifier(seq))
+            psycopg.sql.SQL("DROP SEQUENCE IF EXISTS {schema}.{seq};")
+            .format(
+                seq=psycopg.sql.Identifier(seq),
+                schema=psycopg.sql.Identifier(self.schema),
+            )
             .as_string(self.conn)
         )
 
     def create_sequence(self, *, seq: str, bigint: bool) -> None:
         if bigint:
-            sql = "CREATE SEQUENCE {seq} AS BIGINT;"
+            sql = "CREATE SEQUENCE {schema}.{seq} AS BIGINT;"
         else:
-            sql = "CREATE SEQUENCE {seq};"
+            sql = "CREATE SEQUENCE {schema}.{seq};"
 
         self.cur.execute(
             psycopg.sql.SQL(sql)
-            .format(seq=psycopg.sql.Identifier(seq))
+            .format(
+                seq=psycopg.sql.Identifier(seq),
+                schema=psycopg.sql.Identifier(self.schema),
+            )
             .as_string(self.conn)
         )
 
@@ -80,25 +93,29 @@ class Command:
         self.cur.execute(
             psycopg.sql.SQL(
                 dedent("""
-                ALTER TABLE {table}
+                ALTER TABLE {schema}.{table}
                 ALTER COLUMN {pk_column}
-                SET DEFAULT nextval('{seq}');
+                SET DEFAULT nextval('{schema}.{seq}');
                 """)
             )
             .format(
                 table=psycopg.sql.Identifier(table),
                 pk_column=psycopg.sql.Identifier(pk_column),
                 seq=psycopg.sql.Identifier(seq),
+                schema=psycopg.sql.Identifier(self.schema),
             )
             .as_string(self.conn)
         )
 
     def add_pk(self, *, table: str, pk_column: str) -> None:
         self.cur.execute(
-            psycopg.sql.SQL("ALTER TABLE {table} ADD PRIMARY KEY ({pk_column});")
+            psycopg.sql.SQL(
+                "ALTER TABLE {schema}.{table} ADD PRIMARY KEY ({pk_column});"
+            )
             .format(
                 table=psycopg.sql.Identifier(table),
                 pk_column=psycopg.sql.Identifier(pk_column),
+                schema=psycopg.sql.Identifier(self.schema),
             )
             .as_string(self.conn)
         )
@@ -117,13 +134,13 @@ class Command:
         self.cur.execute(
             psycopg.sql.SQL(
                 dedent("""
-                CREATE OR REPLACE FUNCTION {function}(BIGINT, BIGINT)
+                CREATE OR REPLACE FUNCTION {schema}.{function}(BIGINT, BIGINT)
                 RETURNS VOID AS $$
 
-                  INSERT INTO {table_to}
+                  INSERT INTO {schema}.{table_to}
                   OVERRIDING SYSTEM VALUE
                   SELECT {columns}
-                  FROM {table_from}
+                  FROM {schema}.{table_from}
                   WHERE {pk_column} BETWEEN $1 AND $2
                   ON CONFLICT DO NOTHING
 
@@ -138,16 +155,18 @@ class Command:
                     [psycopg.sql.Identifier(c) for c in columns]
                 ),
                 pk_column=psycopg.sql.Identifier(pk_column),
+                schema=psycopg.sql.Identifier(self.schema),
             )
             .as_string(self.conn)
         )
 
     def drop_trigger_if_exists(self, *, table: str, trigger: str) -> None:
         self.cur.execute(
-            psycopg.sql.SQL("DROP TRIGGER IF EXISTS {trigger} ON {table}")
+            psycopg.sql.SQL("DROP TRIGGER IF EXISTS {trigger} ON {schema}.{table}")
             .format(
                 trigger=psycopg.sql.Identifier(trigger),
                 table=psycopg.sql.Identifier(table),
+                schema=psycopg.sql.Identifier(self.schema),
             )
             .as_string(self.conn)
         )
@@ -164,27 +183,27 @@ class Command:
         self.cur.execute(
             psycopg.sql.SQL(
                 dedent("""
-                CREATE OR REPLACE FUNCTION {trigger_name}()
+                CREATE OR REPLACE FUNCTION {schema}.{trigger_name}()
                 RETURNS TRIGGER AS
                 $$
                 BEGIN
                   IF ( TG_OP = 'INSERT') THEN
-                    PERFORM {function}(NEW.{pk_column}, NEW.{pk_column});
+                    PERFORM {schema}.{function}(NEW.{pk_column}, NEW.{pk_column});
                     RETURN NEW;
                   ELSIF ( TG_OP = 'UPDATE') THEN
-                    DELETE FROM {table_to} WHERE {pk_column} = OLD.{pk_column};
-                    PERFORM {function}(NEW.{pk_column}, NEW.{pk_column});
+                    DELETE FROM {schema}.{table_to} WHERE {pk_column} = OLD.{pk_column};
+                    PERFORM {schema}.{function}(NEW.{pk_column}, NEW.{pk_column});
                     RETURN NEW;
                   ELSIF ( TG_OP = 'DELETE') THEN
-                    DELETE FROM {table_to} WHERE {pk_column} = OLD.{pk_column};
+                    DELETE FROM {schema}.{table_to} WHERE {pk_column} = OLD.{pk_column};
                     RETURN OLD;
                   END IF;
                 END;
                 $$ LANGUAGE PLPGSQL SECURITY DEFINER;
 
                 CREATE TRIGGER {trigger_name}
-                AFTER INSERT OR UPDATE OR DELETE ON {table_from}
-                FOR EACH ROW EXECUTE PROCEDURE {trigger_name}();
+                AFTER INSERT OR UPDATE OR DELETE ON {schema}.{table_from}
+                FOR EACH ROW EXECUTE PROCEDURE {schema}.{trigger_name}();
                 """)
             )
             .format(
@@ -193,6 +212,7 @@ class Command:
                 table_from=psycopg.sql.Identifier(table_from),
                 table_to=psycopg.sql.Identifier(table_to),
                 pk_column=psycopg.sql.Identifier(pk_column),
+                schema=psycopg.sql.Identifier(self.schema),
             )
             .as_string(self.conn)
         )
@@ -201,7 +221,7 @@ class Command:
         self.cur.execute(
             psycopg.sql.SQL(
                 dedent("""
-                CREATE TABLE {table} (
+                CREATE TABLE {schema}.{table} (
                   id SERIAL PRIMARY KEY,
                   batch_start BIGINT,
                   batch_end BIGINT,
@@ -211,6 +231,7 @@ class Command:
             )
             .format(
                 table=psycopg.sql.Identifier(table),
+                schema=psycopg.sql.Identifier(self.schema),
             )
             .as_string(self.conn)
         )
@@ -218,13 +239,14 @@ class Command:
             psycopg.sql.SQL(
                 dedent("""
                 CREATE INDEX {log_index}
-                ON {table} ("finished")
+                ON {schema}.{table} ("finished")
                 WHERE finished IS FALSE;
                 """)
             )
             .format(
                 log_index=psycopg.sql.Identifier(f"{table}_idx"),
                 table=psycopg.sql.Identifier(table),
+                schema=psycopg.sql.Identifier(self.schema),
             )
             .as_string(self.conn)
         )
@@ -254,7 +276,7 @@ class Command:
         self.cur.execute(
             psycopg.sql.SQL(
                 dedent("""
-                INSERT INTO {table} (batch_start, batch_end, finished)
+                INSERT INTO {schema}.{table} (batch_start, batch_end, finished)
                 VALUES {batches};
                 """)
             )
@@ -263,6 +285,7 @@ class Command:
                 batches=psycopg.sql.SQL(", ").join(
                     map(psycopg.sql.SQL, [str(batch) for batch in batches])
                 ),
+                schema=psycopg.sql.Identifier(self.schema),
             )
             .as_string(self.conn)
         )
@@ -276,7 +299,7 @@ class Command:
         is_deferred: bool,
     ) -> None:
         add_constraint_sql = dedent("""
-            ALTER TABLE {table}
+            ALTER TABLE {schema}.{table}
             ADD CONSTRAINT {constraint}
             UNIQUE USING INDEX {index}
         """)
@@ -296,6 +319,7 @@ class Command:
                 table=psycopg.sql.Identifier(table),
                 constraint=psycopg.sql.Identifier(constraint),
                 index=psycopg.sql.Identifier(index),
+                schema=psycopg.sql.Identifier(self.schema),
             )
             .as_string(self.conn)
         )
@@ -304,7 +328,7 @@ class Command:
         self, *, table: str, constraint: str, definition: str, is_validated: bool
     ) -> None:
         add_constraint_sql = dedent("""
-            ALTER TABLE {table}
+            ALTER TABLE {schema}.{table}
             ADD CONSTRAINT {constraint}
             {definition}
         """)
@@ -318,6 +342,7 @@ class Command:
                 table=psycopg.sql.Identifier(table),
                 constraint=psycopg.sql.Identifier(constraint),
                 definition=psycopg.sql.SQL(definition),
+                schema=psycopg.sql.Identifier(self.schema),
             )
             .as_string(self.conn)
         )
@@ -326,30 +351,35 @@ class Command:
         self.cur.execute(
             psycopg.sql.SQL(
                 dedent("""
-                ALTER TABLE {table}
+                ALTER TABLE {schema}.{table}
                 VALIDATE CONSTRAINT {constraint}
                 """)
             )
             .format(
                 table=psycopg.sql.Identifier(table),
                 constraint=psycopg.sql.Identifier(constraint),
+                schema=psycopg.sql.Identifier(self.schema),
             )
             .as_string(self.conn)
         )
 
     def drop_function_if_exists(self, *, function: str) -> None:
         self.cur.execute(
-            psycopg.sql.SQL("DROP FUNCTION IF EXISTS {function};")
-            .format(function=psycopg.sql.Identifier(function))
+            psycopg.sql.SQL("DROP FUNCTION IF EXISTS {schema}.{function};")
+            .format(
+                function=psycopg.sql.Identifier(function),
+                schema=psycopg.sql.Identifier(self.schema),
+            )
             .as_string(self.conn)
         )
 
     def rename_table(self, *, table_from: str, table_to: str) -> None:
         self.cur.execute(
-            psycopg.sql.SQL("ALTER TABLE {table_from} RENAME TO {table_to};")
+            psycopg.sql.SQL("ALTER TABLE {schema}.{table_from} RENAME TO {table_to};")
             .format(
                 table_from=psycopg.sql.Identifier(table_from),
                 table_to=psycopg.sql.Identifier(table_to),
+                schema=psycopg.sql.Identifier(self.schema),
             )
             .as_string(self.conn)
         )
@@ -357,20 +387,22 @@ class Command:
     def rename_index(self, *, idx_from: str, idx_to: str) -> None:
         # Note: Takes a ShareUpdateExclusiveLock on idx_from
         self.cur.execute(
-            psycopg.sql.SQL("ALTER INDEX {idx_from} RENAME TO {idx_to};")
+            psycopg.sql.SQL("ALTER INDEX {schema}.{idx_from} RENAME TO {idx_to};")
             .format(
                 idx_from=psycopg.sql.Identifier(idx_from),
                 idx_to=psycopg.sql.Identifier(idx_to),
+                schema=psycopg.sql.Identifier(self.schema),
             )
             .as_string(self.conn)
         )
 
     def rename_sequence(self, *, seq_from: str, seq_to: str) -> None:
         self.cur.execute(
-            psycopg.sql.SQL("ALTER SEQUENCE {seq_from} RENAME TO {seq_to};")
+            psycopg.sql.SQL("ALTER SEQUENCE {schema}.{seq_from} RENAME TO {seq_to};")
             .format(
                 seq_from=psycopg.sql.Identifier(seq_from),
                 seq_to=psycopg.sql.Identifier(seq_to),
+                schema=psycopg.sql.Identifier(self.schema),
             )
             .as_string(self.conn)
         )
@@ -378,12 +410,13 @@ class Command:
     def rename_constraint(self, *, table: str, cons_from: str, cons_to: str) -> None:
         self.cur.execute(
             psycopg.sql.SQL(
-                "ALTER TABLE {table} RENAME CONSTRAINT {cons_from} TO {cons_to};"
+                "ALTER TABLE {schema}.{table} RENAME CONSTRAINT {cons_from} TO {cons_to};"
             )
             .format(
                 table=psycopg.sql.Identifier(table),
                 cons_from=psycopg.sql.Identifier(cons_from),
                 cons_to=psycopg.sql.Identifier(cons_to),
+                schema=psycopg.sql.Identifier(self.schema),
             )
             .as_string(self.conn)
         )
@@ -392,7 +425,7 @@ class Command:
         self.cur.execute(
             psycopg.sql.SQL(
                 dedent("""
-                ALTER TABLE {table}
+                ALTER TABLE {schema}.{table}
                 ADD CONSTRAINT {constraint}
                 {definition}
                 """)
@@ -401,6 +434,7 @@ class Command:
                 table=psycopg.sql.Identifier(table),
                 constraint=psycopg.sql.Identifier(name),
                 definition=psycopg.sql.SQL(definition),
+                schema=psycopg.sql.Identifier(self.schema),
             )
             .as_string(self.conn)
         )
@@ -412,7 +446,7 @@ class Command:
         self.cur.execute(
             sql=psycopg.sql.SQL(
                 dedent("""
-                ALTER TABLE {table}
+                ALTER TABLE {schema}.{table}
                 ALTER COLUMN {pk_column}
                 ADD GENERATED {identity_type} AS IDENTITY;
                 """)
@@ -421,6 +455,7 @@ class Command:
                 table=psycopg.sql.Identifier(table),
                 pk_column=psycopg.sql.Identifier(pk_column),
                 identity_type=psycopg.sql.SQL(identity_type),
+                schema=psycopg.sql.Identifier(self.schema),
             )
             .as_string(self.conn)
         )
@@ -429,7 +464,7 @@ class Command:
         self.cur.execute(
             psycopg.sql.SQL(
                 dedent("""
-                ALTER TABLE {table}
+                ALTER TABLE {schema}.{table}
                 ALTER COLUMN {pk_column}
                 SET DATA TYPE BIGINT;
                 """)
@@ -437,6 +472,7 @@ class Command:
             .format(
                 table=psycopg.sql.Identifier(table),
                 pk_column=psycopg.sql.Identifier(pk_column),
+                schema=psycopg.sql.Identifier(self.schema),
             )
             .as_string(self.conn)
         )
@@ -452,8 +488,11 @@ class Command:
 
     def acquire_access_exclusive_lock(self, *, table: str) -> None:
         self.cur.execute(
-            psycopg.sql.SQL("LOCK TABLE {table} IN ACCESS EXCLUSIVE MODE;")
-            .format(table=psycopg.sql.Identifier(table))
+            psycopg.sql.SQL("LOCK TABLE {schema}.{table} IN ACCESS EXCLUSIVE MODE;")
+            .format(
+                table=psycopg.sql.Identifier(table),
+                schema=psycopg.sql.Identifier(self.schema),
+            )
             .as_string(self.conn)
         )
 
@@ -461,11 +500,12 @@ class Command:
         self, *, function: str, batch: _introspect.BackfillBatch
     ) -> None:
         self.cur.execute(
-            psycopg.sql.SQL("SELECT {function}({batch_start}, {batch_end});")
+            psycopg.sql.SQL("SELECT {schema}.{function}({batch_start}, {batch_end});")
             .format(
                 function=psycopg.sql.Identifier(function),
                 batch_start=psycopg.sql.Literal(batch.start),
                 batch_end=psycopg.sql.Literal(batch.end),
+                schema=psycopg.sql.Identifier(self.schema),
             )
             .as_string(self.conn)
         )
@@ -477,7 +517,7 @@ class Command:
             psycopg.sql.SQL(
                 dedent("""
                 UPDATE
-                  {table}
+                  {schema}.{table}
                 SET
                   finished = true
                 WHERE
@@ -487,14 +527,18 @@ class Command:
             .format(
                 table=psycopg.sql.Identifier(table),
                 id=psycopg.sql.Literal(batch.id),
+                schema=psycopg.sql.Identifier(self.schema),
             )
             .as_string(self.conn)
         )
 
     def drop_index_concurrently_if_exists(self, *, index: str) -> None:
         self.cur.execute(
-            psycopg.sql.SQL("DROP INDEX CONCURRENTLY IF EXISTS {index};")
-            .format(index=psycopg.sql.Identifier(index))
+            psycopg.sql.SQL("DROP INDEX CONCURRENTLY IF EXISTS {schema}.{index};")
+            .format(
+                index=psycopg.sql.Identifier(index),
+                schema=psycopg.sql.Identifier(self.schema),
+            )
             .as_string(self.conn)
         )
 
