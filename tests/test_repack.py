@@ -34,10 +34,16 @@ class _TableInfo:
     pk_seq: str
 
 
-def _collect_table_info(table: str, connection: _psycopg.Connection) -> _TableInfo:
+def _collect_table_info(
+    table: str,
+    connection: _psycopg.Connection,
+    schema: str = "public",
+) -> _TableInfo:
     with connection.cursor() as cur:
         introspector = _introspect.Introspector(
-            conn=connection, cur=_cur.LoggedCursor(cur=cur)
+            conn=connection,
+            cur=_cur.LoggedCursor(cur=cur),
+            schema=schema,
         )
         oid = introspector.get_table_oid(table=table)
         assert oid is not None

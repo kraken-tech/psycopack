@@ -53,14 +53,33 @@ class BackfillBatch:
 
 
 class Introspector:
-    def __init__(self, *, conn: psycopg.Connection, cur: _cur.LoggedCursor) -> None:
+    def __init__(
+        self, *, conn: psycopg.Connection, cur: _cur.LoggedCursor, schema: str
+    ) -> None:
         self.conn = conn
         self.cur = cur
+        self.schema = schema
 
     def get_table_oid(self, *, table: str) -> int | None:
         self.cur.execute(
-            psycopg.sql.SQL("SELECT oid FROM pg_class WHERE relname = {table};")
-            .format(table=psycopg.sql.Literal(table))
+            psycopg.sql.SQL(
+                dedent("""
+                SELECT
+                  pg_class.oid
+                FROM
+                  pg_catalog.pg_class
+                INNER JOIN
+                  pg_catalog.pg_namespace
+                  ON (pg_namespace.oid = pg_class.relnamespace)
+                WHERE
+                  relname = {table}
+                  AND pg_namespace.nspname = {schema};
+                """)
+            )
+            .format(
+                table=psycopg.sql.Literal(table),
+                schema=psycopg.sql.Literal(self.schema),
+            )
             .as_string(self.conn)
         )
         result = self.cur.fetchone()
@@ -81,11 +100,15 @@ class Introspector:
                   information_schema.columns
                 WHERE
                   table_name = {table}
+                  AND table_schema = {schema}
                 ORDER BY
                   ordinal_position;
                 """)
             )
-            .format(table=psycopg.sql.Literal(table))
+            .format(
+                table=psycopg.sql.Literal(table),
+                schema=psycopg.sql.Literal(self.schema),
+            )
             .as_string(self.conn)
         )
         return [r[0] for r in self.cur.fetchall()]
@@ -97,11 +120,12 @@ class Introspector:
                 SELECT
                   MIN({pk_column}) AS min_pk,
                   MAX({pk_column}) AS max_pk
-                FROM {table};
+                FROM {schema}.{table};
                 """)
             )
             .format(
                 table=psycopg.sql.Identifier(table),
+                schema=psycopg.sql.Identifier(self.schema),
                 pk_column=psycopg.sql.Identifier(pk_column),
             )
             .as_string(self.conn)
@@ -124,21 +148,25 @@ class Introspector:
                   pg_index.indisexclusion,
                   pg_index.indisvalid
                 FROM
-                  pg_indexes
+                  pg_catalog.pg_indexes
                 INNER JOIN
-                  pg_class
+                  pg_catalog.pg_class
                   ON pg_class.relname = pg_indexes.indexname
                 INNER JOIN
-                  pg_index
+                  pg_catalog.pg_index
                   ON pg_index.indexrelid = pg_class.oid
                 WHERE
                   pg_indexes.tablename = {table}
+                  AND pg_indexes.schemaname = {schema}
                 ORDER BY
                   pg_indexes.indexname,
                   pg_indexes.indexdef;
                 """)
             )
-            .format(table=psycopg.sql.Literal(table))
+            .format(
+                table=psycopg.sql.Literal(table),
+                schema=psycopg.sql.Literal(self.schema),
+            )
             .as_string(self.conn)
         )
         results = self.cur.fetchall()
@@ -159,16 +187,23 @@ class Introspector:
             psycopg.sql.SQL(
                 dedent("""
                 SELECT
-                  conname as constraint_name,
-                  pg_get_constraintdef(oid) AS definition,
-                  condeferrable as is_deferrable,
-                  condeferred as is_deferred,
-                  convalidated as is_validated
+                  pg_constraint.conname as constraint_name,
+                  pg_get_constraintdef(pg_constraint.oid) AS definition,
+                  pg_constraint.condeferrable as is_deferrable,
+                  pg_constraint.condeferred as is_deferred,
+                  pg_constraint.convalidated as is_validated
                 FROM
-                  pg_constraint
+                  pg_catalog.pg_constraint
+                INNER JOIN
+                  pg_catalog.pg_namespace
+                  ON (pg_namespace.oid = pg_constraint.connamespace)
+                INNER JOIN
+                  pg_catalog.pg_class
+                  ON (pg_constraint.conrelid = pg_class.oid)
                 WHERE
-                  conrelid = {table}::regclass
-                  AND contype IN ({types})
+                  pg_class.relname = {table}
+                  AND pg_namespace.nspname = {schema}
+                  AND pg_constraint.contype IN ({types})
                 ORDER BY
                   constraint_name,
                   definition;
@@ -176,6 +211,7 @@ class Introspector:
             )
             .format(
                 table=psycopg.sql.Literal(table),
+                schema=psycopg.sql.Literal(self.schema),
                 types=psycopg.sql.SQL(", ").join(map(psycopg.sql.Literal, types)),
             )
             .as_string(self.conn)
@@ -198,24 +234,35 @@ class Introspector:
             psycopg.sql.SQL(
                 dedent("""
                 SELECT
-                  cons.conname AS constraint_name,
-                  pg_get_constraintdef(cons.oid) AS definition,
-                  cons.convalidated AS is_validated,
-                  class.relname AS referring_table
+                  pg_constraint.conname AS constraint_name,
+                  pg_get_constraintdef(pg_constraint.oid) AS definition,
+                  pg_constraint.convalidated AS is_validated,
+                  referring_pg_class.relname AS referring_table
                 FROM
-                  pg_constraint AS cons
+                  pg_catalog.pg_constraint
                 INNER JOIN
-                  pg_class AS class
-                  ON (cons.conrelid = class.oid)
+                  pg_catalog.pg_class AS referring_pg_class
+                  ON (pg_constraint.conrelid = referring_pg_class.oid)
+                INNER JOIN
+                  pg_catalog.pg_class AS referred_pg_class
+                  ON (pg_constraint.confrelid = referred_pg_class.oid)
+                INNER JOIN
+                  pg_catalog.pg_namespace
+                  ON (pg_namespace.oid = referred_pg_class.relnamespace)
                 WHERE
-                  confrelid = {table}::regclass
+                  pg_constraint.confrelid = referred_pg_class.oid
+                  AND referred_pg_class.relname = {table}
+                  AND pg_namespace.nspname = {schema}
                   AND contype = 'f'
                 ORDER BY
                   constraint_name,
                   definition;
                 """)
             )
-            .format(table=psycopg.sql.Literal(table))
+            .format(
+                table=psycopg.sql.Literal(table),
+                schema=psycopg.sql.Literal(self.schema),
+            )
             .as_string(self.conn)
         )
         results = self.cur.fetchall()
@@ -232,8 +279,13 @@ class Introspector:
 
     def table_is_empty(self, *, table: str) -> int:
         self.cur.execute(
-            psycopg.sql.SQL("SELECT NOT EXISTS (SELECT 1 FROM {table} LIMIT 1);")
-            .format(table=psycopg.sql.Identifier(table))
+            psycopg.sql.SQL(
+                "SELECT NOT EXISTS (SELECT 1 FROM {schema}.{table} LIMIT 1);"
+            )
+            .format(
+                table=psycopg.sql.Identifier(table),
+                schema=psycopg.sql.Identifier(self.schema),
+            )
             .as_string(self.conn)
         )
         result = self.cur.fetchone()
@@ -241,6 +293,8 @@ class Introspector:
         return bool(result[0])
 
     def trigger_exists(self, *, trigger: str) -> bool:
+        # Note: Postgres triggers are not schema-qualified. Triggers inherit
+        # the schema of their tables.
         self.cur.execute(
             psycopg.sql.SQL(
                 dedent("""
@@ -264,12 +318,22 @@ class Introspector:
                 SELECT
                   1
                 FROM
-                  pg_inherits
+                  pg_catalog.pg_inherits
+                INNER JOIN
+                  pg_catalog.pg_class
+                  ON (pg_inherits.inhrelid = pg_class.oid)
+                INNER JOIN
+                  pg_catalog.pg_namespace
+                  ON (pg_class.relnamespace = pg_namespace.oid)
                 WHERE
-                  inhrelid = {table}::regclass;
+                  pg_class.relname = {table}
+                  AND pg_namespace.nspname = {schema};
                 """)
             )
-            .format(table=psycopg.sql.Literal(table))
+            .format(
+                table=psycopg.sql.Literal(table),
+                schema=psycopg.sql.Literal(self.schema),
+            )
             .as_string(self.conn)
         )
         return bool(self.cur.fetchone())
@@ -279,20 +343,28 @@ class Introspector:
             psycopg.sql.SQL(
                 dedent("""
                 SELECT
-                  tgname AS name,
-                  tgisinternal AS is_internal,
+                  pg_trigger.tgname AS name,
+                  pg_trigger.tgisinternal AS is_internal,
                   (
-                    tgname LIKE '%' || {name_prefix} || '%'
-                    OR tgname LIKE '%' || {repacked_name_prefix} || '%'
+                    pg_trigger.tgname LIKE '%' || {name_prefix} || '%'
+                    OR pg_trigger.tgname LIKE '%' || {repacked_name_prefix} || '%'
                   ) AS is_psycopack_trigger
                 FROM
-                  pg_trigger
+                  pg_catalog.pg_trigger
+                INNER JOIN
+                  pg_catalog.pg_class
+                  ON (pg_class.oid = pg_trigger.tgrelid)
+                INNER JOIN
+                  pg_catalog.pg_namespace
+                  ON (pg_class.relnamespace = pg_namespace.oid)
                 WHERE
-                  tgrelid = {table}::regclass
+                  pg_class.relname = {table}
+                  AND pg_namespace.nspname = {schema};
                 """)
             )
             .format(
                 table=psycopg.sql.Literal(table),
+                schema=psycopg.sql.Literal(self.schema),
                 name_prefix=psycopg.sql.Literal(_const.NAME_PREFIX),
                 repacked_name_prefix=psycopg.sql.Literal(_const.REPACKED_NAME_PREFIX),
             )
@@ -315,20 +387,33 @@ class Introspector:
             psycopg.sql.SQL(
                 dedent("""
                 SELECT
-                  attr.attname AS column_name,
-                  format_type(attr.atttypid, attr.atttypmod) AS data_type,
-                  attr.attidentity AS identity_type
+                  pg_attribute.attname AS column_name,
+                  format_type(pg_attribute.atttypid, pg_attribute.atttypmod) AS data_type,
+                  pg_attribute.attidentity AS identity_type
                 FROM
-                  pg_index idx
-                JOIN
-                  pg_attribute attr
-                  ON attr.attrelid = idx.indrelid AND attr.attnum = ANY(idx.indkey)
+                  pg_catalog.pg_index
+                INNER JOIN
+                  pg_catalog.pg_attribute
+                  ON (
+                    pg_attribute.attrelid = pg_index.indrelid
+                    AND pg_attribute.attnum = ANY(pg_index.indkey)
+                  )
+                INNER JOIN
+                  pg_catalog.pg_class
+                  ON (pg_class.oid = pg_index.indrelid)
+                INNER JOIN
+                  pg_catalog.pg_namespace
+                  ON (pg_class.relnamespace = pg_namespace.oid)
                 WHERE
-                  idx.indrelid = {table}::regclass
-                  AND idx.indisprimary;
+                  pg_class.relname = {table}
+                  AND pg_namespace.nspname = {schema}
+                  AND pg_index.indisprimary;
                 """)
             )
-            .format(table=psycopg.sql.Literal(table))
+            .format(
+                table=psycopg.sql.Literal(table),
+                schema=psycopg.sql.Literal(self.schema),
+            )
             .as_string(self.conn)
         )
         if not (results := self.cur.fetchall()):
@@ -346,9 +431,11 @@ class Introspector:
 
         if pk_info.identity_type:
             self.cur.execute(
-                psycopg.sql.SQL("SELECT pg_get_serial_sequence({table}, {column});")
+                psycopg.sql.SQL(
+                    "SELECT pg_get_serial_sequence({table_with_schema}, {column});"
+                )
                 .format(
-                    table=psycopg.sql.Literal(table),
+                    table_with_schema=psycopg.sql.Literal(f"{self.schema}.{table}"),
                     column=psycopg.sql.Literal(pk_info.columns[0]),
                 )
                 .as_string(self.conn)
@@ -370,24 +457,32 @@ class Introspector:
                     SELECT
                       (
                         SELECT
-                          pg_catalog.pg_get_expr(attdef.adbin, attdef.adrelid, true)
+                          pg_catalog.pg_get_expr(pg_attrdef.adbin, pg_attrdef.adrelid, true)
                         FROM
-                          pg_catalog.pg_attrdef attdef
+                          pg_catalog.pg_attrdef
                         WHERE
-                          attdef.adrelid = att.attrelid
-                          AND attdef.adnum = att.attnum
-                          AND att.atthasdef
+                          pg_attrdef.adrelid = pg_attribute.attrelid
+                          AND pg_attrdef.adnum = pg_attribute.attnum
+                          AND pg_attribute.atthasdef
                       ) AS seq_def
                     FROM
-                      pg_catalog.pg_attribute att
+                      pg_catalog.pg_attribute
+                    INNER JOIN
+                      pg_catalog.pg_class
+                      ON (pg_class.oid = pg_attribute.attrelid)
+                    INNER JOIN
+                      pg_catalog.pg_namespace
+                      ON (pg_class.relnamespace = pg_namespace.oid)
                     WHERE
-                      att.attrelid = {table}::regclass
-                      AND att.attname = {column}
-                    ORDER BY att.attnum;
+                      pg_class.relname = {table}
+                      AND pg_namespace.nspname = {schema}
+                      AND pg_attribute.attname = {column}
+                    ORDER BY pg_attribute.attnum;
                     """)
                 )
                 .format(
                     table=psycopg.sql.Literal(table),
+                    schema=psycopg.sql.Literal(self.schema),
                     column=psycopg.sql.Literal(pk_info.columns[0]),
                 )
                 .as_string(self.conn)
@@ -401,10 +496,16 @@ class Introspector:
             assert isinstance(seq_def, str)
             # The seq_def variable looks something like:
             #  nextval('psycopack_2999727_id_seq'::regclass)
-            # So we need to parse the sequence name out.
+            # Or when the schema is not "public":
+            #  nextval('sweet_schema.psycopack_2999727_id_seq'::regclass)
+            # So the nextval() parts and optional schema name are parsed out.
             start: int = seq_def.find("'") + 1
             end: int = seq_def.find("'", start)
-            return seq_def[start:end]
+            seq = seq_def[start:end]
+            if "." in seq:
+                seq = seq.split(".")[1]
+            assert isinstance(seq, str)
+            return seq
 
     def get_backfill_batch(self, *, table: str) -> BackfillBatch | None:
         self.cur.execute(
@@ -413,14 +514,17 @@ class Introspector:
                 SELECT
                   id, batch_start, batch_end
                 FROM
-                  {table}
+                  {schema}.{table}
                 WHERE
                   finished IS false
                 FOR UPDATE SKIP LOCKED
                 LIMIT 1;
                 """)
             )
-            .format(table=psycopg.sql.Identifier(table))
+            .format(
+                table=psycopg.sql.Identifier(table),
+                schema=psycopg.sql.Identifier(self.schema),
+            )
             .as_string(self.conn)
         )
         if not (result := self.cur.fetchone()):

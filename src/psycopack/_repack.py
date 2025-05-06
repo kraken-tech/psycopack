@@ -115,10 +115,15 @@ class Repack:
         convert_pk_to_bigint: bool = False,
         post_backfill_batch_callback: PostBackfillBatchCallback | None = None,
         lock_timeout: datetime.timedelta = datetime.timedelta(seconds=10),
+        schema: str = "public",
     ) -> None:
         self.conn = conn
         self.cur = _cur.LoggedCursor(cur=cur)
-        self.introspector = _introspect.Introspector(conn=self.conn, cur=self.cur)
+        self.introspector = _introspect.Introspector(
+            conn=self.conn,
+            cur=self.cur,
+            schema=schema,
+        )
         self.command = _commands.Command(
             conn=self.conn,
             cur=self.cur,
@@ -162,6 +167,7 @@ class Repack:
             command=self.command,
         )
         self._pk_column = ""
+        self.schema = schema
 
     @property
     def pk_column(self) -> str:
@@ -730,9 +736,16 @@ class Repack:
                 # original table.
                 continue
             if not existing_fk:
-                definition = fk.definition.replace(
-                    f"REFERENCES {self.table}", f"REFERENCES {self.copy_table}"
-                )
+                if f"{self.schema}.{self.table}" in fk.definition:
+                    definition = fk.definition.replace(
+                        f"REFERENCES {self.schema}.{self.table}",
+                        f"REFERENCES {self.schema}.{self.copy_table}",
+                    )
+                else:
+                    definition = fk.definition.replace(
+                        f"REFERENCES {self.table}",
+                        f"REFERENCES {self.copy_table}",
+                    )
                 self.command.create_not_valid_constraint_from_def(
                     table=fk.referring_table,
                     constraint=constraint_name,
