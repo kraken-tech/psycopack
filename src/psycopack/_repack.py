@@ -625,7 +625,7 @@ class Repack:
         ]
         with self.command.lock_timeout(datetime.timedelta(seconds=0)):
             for index in invalid_indexes:
-                self.cur.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {index.name};")
+                self.command.drop_index_concurrently_if_exists(index=index.name)
 
         # We already created a PK index when creating the copy table, so we'll
         # skip it here as it does not need to be recreated. The same is true

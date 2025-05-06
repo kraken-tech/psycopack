@@ -491,6 +491,13 @@ class Command:
             .as_string(self.conn)
         )
 
+    def drop_index_concurrently_if_exists(self, *, index: str) -> None:
+        self.cur.execute(
+            psycopg.sql.SQL("DROP INDEX CONCURRENTLY IF EXISTS {index};")
+            .format(index=psycopg.sql.Identifier(index))
+            .as_string(self.conn)
+        )
+
     @contextmanager
     def db_transaction(self) -> Iterator[None]:
         self.cur.execute("BEGIN;")
