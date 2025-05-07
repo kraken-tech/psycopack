@@ -89,12 +89,14 @@ class Tracker:
         repacked_trigger: str,
         introspector: _introspect.Introspector,
         command: _commands.Command,
+        schema: str,
     ) -> None:
         self.table = table
         self.conn = conn
         self.cur = cur
         self.introspector = introspector
         self.command = command
+        self.schema = schema
 
         self.copy_table = copy_table
         self.trigger = trigger
@@ -235,7 +237,7 @@ class Tracker:
         self.cur.execute(
             psycopg.sql.SQL(
                 dedent("""
-                CREATE TABLE {table} (
+                CREATE TABLE {schema}.{table} (
                   stage VARCHAR(32) NOT NULL UNIQUE,
                   step INTEGER NOT NULL UNIQUE,
                   started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -245,6 +247,7 @@ class Tracker:
             )
             .format(
                 table=psycopg.sql.Identifier(self.tracker_table),
+                schema=psycopg.sql.Identifier(self.schema),
             )
             .as_string(self.conn)
         )
@@ -261,7 +264,7 @@ class Tracker:
                 CREATE UNIQUE INDEX
                   {index}
                 ON
-                  {table} (COALESCE(finished_at, '1970-01-01 00:00:00'))
+                  {schema}.{table} (COALESCE(finished_at, '1970-01-01 00:00:00'))
                 WHERE
                   finished_at IS NULL;
                 """)
@@ -269,6 +272,7 @@ class Tracker:
             .format(
                 index=psycopg.sql.Identifier(f"{self.tracker_table}_uniq_idx"),
                 table=psycopg.sql.Identifier(self.tracker_table),
+                schema=psycopg.sql.Identifier(self.schema),
             )
             .as_string(self.conn)
         )
@@ -287,12 +291,15 @@ class Tracker:
                   stage,
                   step
                 FROM
-                  {table}
+                  {schema}.{table}
                 ORDER BY
                   step ASC;
                 """)
             )
-            .format(table=psycopg.sql.Identifier(self.tracker_table))
+            .format(
+                table=psycopg.sql.Identifier(self.tracker_table),
+                schema=psycopg.sql.Identifier(self.schema),
+            )
             .as_string(self.conn)
         )
         result = self.cur.fetchall()
@@ -312,7 +319,7 @@ class Tracker:
                 SELECT
                   stage
                 FROM
-                  {table}
+                  {schema}.{table}
                 WHERE
                   finished_at IS NULL
                 ORDER BY
@@ -320,7 +327,10 @@ class Tracker:
                 LIMIT 1;
                 """)
             )
-            .format(table=psycopg.sql.Identifier(self.tracker_table))
+            .format(
+                table=psycopg.sql.Identifier(self.tracker_table),
+                schema=psycopg.sql.Identifier(self.schema),
+            )
             .as_string(self.conn)
         )
         result = self.cur.fetchone()
@@ -338,7 +348,7 @@ class Tracker:
                 SELECT
                   1
                 FROM
-                  {table}
+                  {schema}.{table}
                 WHERE
                   stage = {stage}
                   AND finished_at IS NOT NULL;
@@ -347,6 +357,7 @@ class Tracker:
             .format(
                 table=psycopg.sql.Identifier(self.tracker_table),
                 stage=psycopg.sql.Literal(stage.value.name),
+                schema=psycopg.sql.Identifier(self.schema),
             )
             .as_string(self.conn)
         )
@@ -371,7 +382,7 @@ class Tracker:
             psycopg.sql.SQL(
                 dedent("""
                 UPDATE
-                  {table}
+                  {schema}.{table}
                 SET
                   finished_at = CURRENT_TIMESTAMP
                 WHERE
@@ -380,6 +391,7 @@ class Tracker:
             )
             .format(
                 table=psycopg.sql.Identifier(self.tracker_table),
+                schema=psycopg.sql.Identifier(self.schema),
             )
             .as_string(self.conn)
         )
@@ -390,7 +402,7 @@ class Tracker:
             psycopg.sql.SQL(
                 dedent("""
                 INSERT INTO
-                  {table} (stage, step)
+                  {schema}.{table} (stage, step)
                 VALUES
                   ({stage}, {step});
                 """)
@@ -399,6 +411,7 @@ class Tracker:
                 table=psycopg.sql.Identifier(self.tracker_table),
                 stage=psycopg.sql.Literal(stage),
                 step=psycopg.sql.Literal(step),
+                schema=psycopg.sql.Identifier(self.schema),
             )
             .as_string(self.conn)
         )
@@ -419,12 +432,15 @@ class Tracker:
             psycopg.sql.SQL(
                 dedent("""
                 DELETE FROM
-                  {table}
+                  {schema}.{table}
                 WHERE
                   finished_at is NULL;
                 """)
             )
-            .format(table=psycopg.sql.Identifier(self.tracker_table))
+            .format(
+                table=psycopg.sql.Identifier(self.tracker_table),
+                schema=psycopg.sql.Identifier(self.schema),
+            )
             .as_string(self.conn)
         )
 
@@ -433,7 +449,7 @@ class Tracker:
             psycopg.sql.SQL(
                 dedent("""
                 UPDATE
-                  {table}
+                  {schema}.{table}
                 SET
                   finished_at = NULL
                 WHERE
@@ -443,6 +459,7 @@ class Tracker:
             .format(
                 table=psycopg.sql.Identifier(self.tracker_table),
                 stage=psycopg.sql.Literal(stage.value.name),
+                schema=psycopg.sql.Identifier(self.schema),
             )
             .as_string(self.conn)
         )

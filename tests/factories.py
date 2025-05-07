@@ -14,6 +14,7 @@ def create_table_for_repacking(
     pk_type: str = "SERIAL",
     pk_name: str = "id",
     ommit_sequence: bool = False,
+    schema: str = "public",
 ) -> None:
     """
     Creates a table to repack (default: "to_repack") that has:
@@ -26,13 +27,15 @@ def create_table_for_repacking(
         7. Check constraints (valid and not valid).
         8. A column that has the same name as the table.
     """
-    cur.execute("CREATE TABLE referred_table (id SERIAL PRIMARY KEY);")
+    cur.execute(f"CREATE TABLE {schema}.referred_table (id SERIAL PRIMARY KEY);")
     cur.execute(
-        f"INSERT INTO referred_table (id) SELECT generate_series(1, {referred_table_rows});"
+        f"INSERT INTO {schema}.referred_table (id) SELECT generate_series(1, {referred_table_rows});"
     )
-    cur.execute("CREATE TABLE not_valid_referred_table (id SERIAL PRIMARY KEY);")
     cur.execute(
-        f"INSERT INTO not_valid_referred_table (id) SELECT generate_series(1, {referred_table_rows});"
+        f"CREATE TABLE {schema}.not_valid_referred_table (id SERIAL PRIMARY KEY);"
+    )
+    cur.execute(
+        f"INSERT INTO {schema}.not_valid_referred_table (id) SELECT generate_series(1, {referred_table_rows});"
     )
 
     if (
@@ -42,12 +45,12 @@ def create_table_for_repacking(
     ):
         # Create a sequence manually.
         seq = f"{table_name}_seq"
-        cur.execute(f"CREATE SEQUENCE {seq};")
-        pk_type = f"{pk_type} DEFAULT NEXTVAL('{seq}')"
+        cur.execute(f"CREATE SEQUENCE {schema}.{seq};")
+        pk_type = f"{pk_type} DEFAULT NEXTVAL('{schema}.{seq}')"
 
     cur.execute(
         dedent(f"""
-        CREATE TABLE {table_name} (
+        CREATE TABLE {schema}.{table_name} (
             {pk_name} {pk_type} PRIMARY KEY,
             var_with_btree VARCHAR(255),
             var_with_pattern_ops VARCHAR(255),
@@ -58,7 +61,7 @@ def create_table_for_repacking(
             var_with_unique_const VARCHAR(10) UNIQUE,
             var_with_deferrable_const VARCHAR(10),
             var_with_deferred_const VARCHAR(10),
-            valid_fk INTEGER REFERENCES referred_table(id),
+            valid_fk INTEGER REFERENCES {schema}.referred_table(id),
             not_valid_fk INTEGER,
             {table_name} INTEGER,
             var_maybe_with_exclusion VARCHAR(255),
@@ -66,57 +69,59 @@ def create_table_for_repacking(
         );
     """)
     )
-    cur.execute(f"CREATE INDEX btree_idx ON {table_name} (var_with_btree);")
+    cur.execute(f"CREATE INDEX btree_idx ON {schema}.{table_name} (var_with_btree);")
     cur.execute(
-        f"CREATE INDEX pattern_ops_idx ON {table_name} (var_with_pattern_ops varchar_pattern_ops);"
+        f"CREATE INDEX pattern_ops_idx ON {schema}.{table_name} (var_with_pattern_ops varchar_pattern_ops);"
     )
     cur.execute(
-        f"CREATE UNIQUE INDEX unique_idx ON {table_name} (var_with_unique_idx);"
+        f"CREATE UNIQUE INDEX unique_idx ON {schema}.{table_name} (var_with_unique_idx);"
     )
     cur.execute(
         dedent(f"""
         CREATE INDEX
         this_carefully_crafted_index_name_has_exactly_sixty_three_chars
-        ON {table_name} (int_with_long_index_name);
+        ON {schema}.{table_name} (int_with_long_index_name);
         """)
     )
 
     cur.execute(
-        f"CREATE INDEX duplicate_idx_1 ON {table_name} (var_with_multiple_idx);"
+        f"CREATE INDEX duplicate_idx_1 ON {schema}.{table_name} (var_with_multiple_idx);"
     )
     cur.execute(
-        f"CREATE INDEX duplicate_idx_2 ON {table_name} (var_with_multiple_idx);"
+        f"CREATE INDEX duplicate_idx_2 ON {schema}.{table_name} (var_with_multiple_idx);"
     )
     cur.execute(
-        f"CREATE UNIQUE INDEX duplicate_idx_3 ON {table_name} (var_with_multiple_idx);"
+        f"CREATE UNIQUE INDEX duplicate_idx_3 ON {schema}.{table_name} (var_with_multiple_idx);"
     )
 
     # Index for a column that has the same name as the table.
-    cur.execute(f"CREATE INDEX {table_name}_idx ON {table_name} ({table_name});")
+    cur.execute(
+        f"CREATE INDEX {table_name}_idx ON {schema}.{table_name} ({table_name});"
+    )
     cur.execute(
         dedent(f"""
-        ALTER TABLE {table_name} ADD CONSTRAINT not_valid_fk
+        ALTER TABLE {schema}.{table_name} ADD CONSTRAINT not_valid_fk
             FOREIGN KEY (not_valid_fk)
-            REFERENCES not_valid_referred_table(id)
+            REFERENCES {schema}.not_valid_referred_table(id)
             NOT VALID;
     """)
     )
     cur.execute(
         dedent(f"""
-        ALTER TABLE {table_name} ADD CONSTRAINT not_valid_check
+        ALTER TABLE {schema}.{table_name} ADD CONSTRAINT not_valid_check
         CHECK (int_with_not_valid_check >= 0) NOT VALID;
         """)
     )
     cur.execute(
         dedent(f"""
-        ALTER TABLE {table_name} ADD CONSTRAINT non_deferrable_const
+        ALTER TABLE {schema}.{table_name} ADD CONSTRAINT non_deferrable_const
         UNIQUE (var_with_deferrable_const)
         DEFERRABLE;
         """)
     )
     cur.execute(
         dedent(f"""
-        ALTER TABLE {table_name} ADD CONSTRAINT deferred_const
+        ALTER TABLE {schema}.{table_name} ADD CONSTRAINT deferred_const
         UNIQUE (var_with_deferred_const)
         DEFERRABLE INITIALLY DEFERRED;
         """)
@@ -124,14 +129,14 @@ def create_table_for_repacking(
     # Constraint for a column that has the same name as the table.
     cur.execute(
         dedent(f"""
-        ALTER TABLE {table_name} ADD CONSTRAINT {table_name}_const
+        ALTER TABLE {schema}.{table_name} ADD CONSTRAINT {table_name}_const
         CHECK ({table_name} > 0);
         """)
     )
     if with_exclusion_constraint:
         cur.execute(
             dedent(f"""
-            ALTER TABLE {table_name}
+            ALTER TABLE {schema}.{table_name}
             ADD CONSTRAINT exclusion_var
             EXCLUDE USING BTREE (var_maybe_with_exclusion WITH =);
             """)
@@ -139,7 +144,7 @@ def create_table_for_repacking(
 
     cur.execute(
         dedent(f"""
-        INSERT INTO {table_name} (
+        INSERT INTO {schema}.{table_name} (
             {"id," if ommit_sequence else ""}
             var_with_btree,
             var_with_pattern_ops,
@@ -177,21 +182,21 @@ def create_table_for_repacking(
     )
     cur.execute(
         dedent(f"""
-        CREATE TABLE referring_table (
+        CREATE TABLE {schema}.referring_table (
             id SERIAL PRIMARY KEY,
-            {table_name}_{pk_name} INTEGER REFERENCES {table_name}({pk_name})
+            {table_name}_{pk_name} INTEGER REFERENCES {schema}.{table_name}({pk_name})
         );
     """)
     )
     cur.execute(
         dedent(f"""
-        INSERT INTO referring_table ({table_name}_{pk_name})
+        INSERT INTO {schema}.referring_table ({table_name}_{pk_name})
         SELECT generate_series(1, {referring_table_rows});
     """)
     )
     cur.execute(
         dedent(f"""
-        CREATE TABLE not_valid_referring_table (
+        CREATE TABLE {schema}.not_valid_referring_table (
             id SERIAL PRIMARY KEY,
             {table_name}_{pk_name} INTEGER
         );
@@ -199,15 +204,15 @@ def create_table_for_repacking(
     )
     cur.execute(
         dedent(f"""
-        ALTER TABLE not_valid_referring_table ADD CONSTRAINT not_valid_referring
+        ALTER TABLE {schema}.not_valid_referring_table ADD CONSTRAINT not_valid_referring
             FOREIGN KEY ({table_name}_{pk_name})
-            REFERENCES {table_name}({pk_name})
+            REFERENCES {schema}.{table_name}({pk_name})
             NOT VALID;
     """)
     )
     cur.execute(
         dedent(f"""
-        INSERT INTO not_valid_referring_table ({table_name}_{pk_name})
+        INSERT INTO {schema}.not_valid_referring_table ({table_name}_{pk_name})
         SELECT generate_series(1, {referring_table_rows});
     """)
     )
