@@ -9,10 +9,16 @@ from . import _psycopg as psycopg
 
 
 class Command:
-    def __init__(self, *, conn: psycopg.Connection, cur: _cur.LoggedCursor) -> None:
+    def __init__(
+        self,
+        *,
+        conn: psycopg.Connection,
+        cur: _cur.LoggedCursor,
+        introspector: _introspect.Introspector,
+    ) -> None:
         self.conn = conn
         self.cur = cur
-        self.introspector = _introspect.Introspector(conn=self.conn, cur=self.cur)
+        self.introspector = introspector
 
     def drop_constraint(self, *, table: str, constraint: str) -> None:
         self.cur.execute(
@@ -443,6 +449,54 @@ class Command:
         self.rename_sequence(seq_from=first_seq, seq_to=temp_seq)
         self.rename_sequence(seq_from=second_seq, seq_to=first_seq)
         self.rename_sequence(seq_from=temp_seq, seq_to=second_seq)
+
+    def acquire_access_exclusive_lock(self, *, table: str) -> None:
+        self.cur.execute(
+            psycopg.sql.SQL("LOCK TABLE {table} IN ACCESS EXCLUSIVE MODE;")
+            .format(table=psycopg.sql.Identifier(table))
+            .as_string(self.conn)
+        )
+
+    def execute_copy_function(
+        self, *, function: str, batch: _introspect.BackfillBatch
+    ) -> None:
+        self.cur.execute(
+            psycopg.sql.SQL("SELECT {function}({batch_start}, {batch_end});")
+            .format(
+                function=psycopg.sql.Identifier(function),
+                batch_start=psycopg.sql.Literal(batch.start),
+                batch_end=psycopg.sql.Literal(batch.end),
+            )
+            .as_string(self.conn)
+        )
+
+    def set_batch_to_finished(
+        self, *, table: str, batch: _introspect.BackfillBatch
+    ) -> None:
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                UPDATE
+                  {table}
+                SET
+                  finished = true
+                WHERE
+                  id = {id};
+                """)
+            )
+            .format(
+                table=psycopg.sql.Identifier(table),
+                id=psycopg.sql.Literal(batch.id),
+            )
+            .as_string(self.conn)
+        )
+
+    def drop_index_concurrently_if_exists(self, *, index: str) -> None:
+        self.cur.execute(
+            psycopg.sql.SQL("DROP INDEX CONCURRENTLY IF EXISTS {index};")
+            .format(index=psycopg.sql.Identifier(index))
+            .as_string(self.conn)
+        )
 
     @contextmanager
     def db_transaction(self) -> Iterator[None]:

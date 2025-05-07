@@ -7,11 +7,9 @@
 # 3. Due to the way the backfilling works, it may affect the correlation of a
 #    certain field. TODO: Investigate if doing it the "repack" way is better in
 #    such cases.
-import dataclasses
 import datetime
 import typing
 from collections import defaultdict
-from textwrap import dedent
 
 from . import _commands, _const, _cur, _identifiers, _introspect, _tracker
 from . import _psycopg as psycopg
@@ -61,15 +59,10 @@ class InvalidIndexes(BaseRepackError):
     pass
 
 
-@dataclasses.dataclass
-class BackfillBatch:
-    id: int
-    start: int
-    end: int
-
-
 class PostBackfillBatchCallback(typing.Protocol):
-    def __call__(self, batch: BackfillBatch, /) -> None: ...  # pragma: no cover
+    def __call__(
+        self, batch: _introspect.BackfillBatch, /
+    ) -> None: ...  # pragma: no cover
 
 
 class Repack:
@@ -126,7 +119,11 @@ class Repack:
         self.conn = conn
         self.cur = _cur.LoggedCursor(cur=cur)
         self.introspector = _introspect.Introspector(conn=self.conn, cur=self.cur)
-        self.command = _commands.Command(conn=self.conn, cur=self.cur)
+        self.command = _commands.Command(
+            conn=self.conn,
+            cur=self.cur,
+            introspector=self.introspector,
+        )
 
         self.table = table
         self.batch_size = batch_size
@@ -161,6 +158,8 @@ class Repack:
             backfill_log=self.backfill_log,
             repacked_name=self.repacked_name,
             repacked_trigger=self.repacked_trigger,
+            introspector=self.introspector,
+            command=self.command,
         )
         self._pk_column = ""
 
@@ -322,10 +321,8 @@ class Repack:
                 self.command.db_transaction(),
                 self.command.lock_timeout(self.lock_timeout),
             ):
-                self.cur.execute(f"LOCK TABLE {self.table} IN ACCESS EXCLUSIVE MODE;")
-                self.cur.execute(
-                    f"LOCK TABLE {self.copy_table} IN ACCESS EXCLUSIVE MODE;"
-                )
+                self.command.acquire_access_exclusive_lock(table=self.table)
+                self.command.acquire_access_exclusive_lock(table=self.copy_table)
                 self.command.drop_trigger_if_exists(
                     table=self.table, trigger=self.trigger
                 )
@@ -376,10 +373,8 @@ class Repack:
             self.command.lock_timeout(self.lock_timeout),
         ):
             self.tracker._revert_swap()
-            self.cur.execute(f"LOCK TABLE {self.table} IN ACCESS EXCLUSIVE MODE;")
-            self.cur.execute(
-                f"LOCK TABLE {self.repacked_name} IN ACCESS EXCLUSIVE MODE;"
-            )
+            self.command.acquire_access_exclusive_lock(table=self.table)
+            self.command.acquire_access_exclusive_lock(table=self.repacked_name)
             self.command.drop_trigger_if_exists(
                 table=self.table,
                 trigger=self.repacked_trigger,
@@ -606,59 +601,15 @@ class Repack:
         # an infinite single-threaded loop.
         while True:
             with self.command.db_transaction():
-                self.cur.execute(
-                    psycopg.sql.SQL(
-                        dedent("""
-                        SELECT
-                          id, batch_start, batch_end
-                        FROM
-                          {backfill_log}
-                        WHERE
-                          finished IS false
-                        FOR UPDATE SKIP LOCKED
-                        LIMIT 1;
-                        """)
-                    )
-                    .format(backfill_log=psycopg.sql.Identifier(self.backfill_log))
-                    .as_string(self.conn)
-                )
-                result = self.cur.fetchone()
-
-                if not result:
+                batch = self.introspector.get_backfill_batch(table=self.backfill_log)
+                if not batch:
                     # No batches available to process at present.
                     break
+                self.command.execute_copy_function(function=self.function, batch=batch)
+                self.command.set_batch_to_finished(table=self.backfill_log, batch=batch)
 
-                id, batch_start, batch_end = result
-                self.cur.execute(
-                    psycopg.sql.SQL("SELECT {function}({batch_start}, {batch_end});")
-                    .format(
-                        function=psycopg.sql.Identifier(self.function),
-                        batch_start=psycopg.sql.Literal(batch_start),
-                        batch_end=psycopg.sql.Literal(batch_end),
-                    )
-                    .as_string(self.conn)
-                )
-                self.cur.execute(
-                    psycopg.sql.SQL(
-                        dedent("""
-                        UPDATE
-                          {backfill_log}
-                        SET
-                          finished = true
-                        WHERE
-                          id = {id};
-                        """)
-                    )
-                    .format(
-                        backfill_log=psycopg.sql.Identifier(self.backfill_log),
-                        id=psycopg.sql.Literal(id),
-                    )
-                    .as_string(self.conn)
-                )
             if self.post_backfill_batch_callback:
-                self.post_backfill_batch_callback(
-                    BackfillBatch(id=id, start=batch_start, end=batch_end)
-                )
+                self.post_backfill_batch_callback(batch)
 
     def _create_indexes(self) -> None:
         # Start by checking if there are any invalid indexes already created
@@ -672,9 +623,10 @@ class Repack:
             and (not index.is_exclusion)
             and (not index.is_valid)
         ]
-        with self.command.lock_timeout(datetime.timedelta(seconds=0)):
-            for index in invalid_indexes:
-                self.cur.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {index.name};")
+        if invalid_indexes:
+            with self.command.lock_timeout(datetime.timedelta(seconds=0)):
+                for index in invalid_indexes:
+                    self.command.drop_index_concurrently_if_exists(index=index.name)
 
         # We already created a PK index when creating the copy table, so we'll
         # skip it here as it does not need to be recreated. The same is true

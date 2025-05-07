@@ -45,6 +45,13 @@ class PrimaryKey:
     identity_type: str
 
 
+@dataclasses.dataclass
+class BackfillBatch:
+    id: int
+    start: int
+    end: int
+
+
 class Introspector:
     def __init__(self, *, conn: psycopg.Connection, cur: _cur.LoggedCursor) -> None:
         self.conn = conn
@@ -398,3 +405,24 @@ class Introspector:
             start: int = seq_def.find("'") + 1
             end: int = seq_def.find("'", start)
             return seq_def[start:end]
+
+    def get_backfill_batch(self, *, table: str) -> BackfillBatch | None:
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                SELECT
+                  id, batch_start, batch_end
+                FROM
+                  {table}
+                WHERE
+                  finished IS false
+                FOR UPDATE SKIP LOCKED
+                LIMIT 1;
+                """)
+            )
+            .format(table=psycopg.sql.Identifier(table))
+            .as_string(self.conn)
+        )
+        if not (result := self.cur.fetchone()):
+            return None
+        return BackfillBatch(id=result[0], start=result[1], end=result[2])
