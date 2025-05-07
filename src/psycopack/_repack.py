@@ -166,6 +166,7 @@ class Repack:
             repacked_trigger=self.repacked_trigger,
             introspector=self.introspector,
             command=self.command,
+            schema=schema,
         )
         self._pk_column = ""
         self.schema = schema

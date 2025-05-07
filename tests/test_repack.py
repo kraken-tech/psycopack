@@ -1575,3 +1575,49 @@ def test_when_invalid_indexes(connection: _psycopg.Connection) -> None:
 
         with pytest.raises(InvalidIndexes, match="btree_idx"):
             repack.full()
+
+
+def test_with_non_default_schema(connection: _psycopg.Connection) -> None:
+    schema = "sweet_schema"
+    with connection.cursor() as cur:
+        cur.execute(f"CREATE SCHEMA {schema};")
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+            pk_type="integer",
+            schema=schema,
+        )
+        table_before = _collect_table_info(
+            table="to_repack",
+            connection=connection,
+            schema=schema,
+        )
+        repack = Repack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+            schema=schema,
+        )
+        repack.pre_validate()
+        repack.setup_repacking()
+        repack.backfill()
+        repack.sync_schemas()
+        repack.swap()
+        repack.revert_swap()
+        repack.swap()
+        repack.full()
+
+        table_after = _collect_table_info(
+            table="to_repack",
+            connection=connection,
+            schema=schema,
+        )
+        _assert_repack(
+            table_before=table_before,
+            table_after=table_after,
+            repack=repack,
+            cur=cur,
+        )
