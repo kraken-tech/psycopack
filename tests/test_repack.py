@@ -1,4 +1,5 @@
 import dataclasses
+from textwrap import dedent
 from unittest import mock
 
 import pytest
@@ -12,6 +13,7 @@ from psycopack import (
     InvalidPrimaryKeyTypeForConversion,
     InvalidStageForReset,
     PrimaryKeyNotFound,
+    ReferringForeignKeyInDifferentSchema,
     Repack,
     TableDoesNotExist,
     TableHasTriggers,
@@ -1621,3 +1623,33 @@ def test_with_non_default_schema(connection: _psycopg.Connection) -> None:
             repack=repack,
             cur=cur,
         )
+
+
+def test_with_fks_from_another_schema(connection: _psycopg.Connection) -> None:
+    with connection.cursor() as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=10,
+            pk_type="integer",
+        )
+        repack = Repack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+        )
+        schema = "sweet_schema"
+        cur.execute(f"CREATE SCHEMA {schema};")
+        cur.execute(
+            dedent(f"""
+            CREATE TABLE {schema}.referring_table (
+              to_repack_id INTEGER REFERENCES public.to_repack(id)
+            );
+            """)
+        )
+        with pytest.raises(
+            ReferringForeignKeyInDifferentSchema, match=f"{schema}.referring_table"
+        ):
+            repack.full()

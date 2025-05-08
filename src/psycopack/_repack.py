@@ -7,6 +7,7 @@
 # 3. Due to the way the backfilling works, it may affect the correlation of a
 #    certain field. TODO: Investigate if doing it the "repack" way is better in
 #    such cases.
+# 4. Add support for tables with fk in other schemas.
 import datetime
 import typing
 from collections import defaultdict
@@ -56,6 +57,10 @@ class InvalidStageForReset(BaseRepackError):
 
 
 class InvalidIndexes(BaseRepackError):
+    pass
+
+
+class ReferringForeignKeyInDifferentSchema(BaseRepackError):
     pass
 
 
@@ -290,6 +295,19 @@ class Repack:
                 raise InvalidIndexes(
                     f"Please either DROP or REINDEX the following indexes "
                     f"before proceeding with Psycopack: {invalid_indexes}."
+                )
+
+            fks_in_different_schema = [
+                f"{fk.schema}.{fk.name}"
+                for fk in self.introspector.get_referring_fks(table=self.table)
+                if fk.schema != self.schema
+            ]
+            if len(fks_in_different_schema) > 0:
+                raise ReferringForeignKeyInDifferentSchema(
+                    f"Psycopack does not yet support tables with referring "
+                    f"foreign keys in another schema. The table {self.table} "
+                    f"has the following referring foreign keys in a different "
+                    f"schema: {fks_in_different_schema}."
                 )
 
     def setup_repacking(self) -> None:
