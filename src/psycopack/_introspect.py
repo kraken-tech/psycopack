@@ -29,6 +29,7 @@ class ReferringForeignKey:
     definition: str
     is_validated: bool
     referring_table: str
+    schema: str
 
 
 @dataclasses.dataclass
@@ -237,7 +238,8 @@ class Introspector:
                   pg_constraint.conname AS constraint_name,
                   pg_get_constraintdef(pg_constraint.oid) AS definition,
                   pg_constraint.convalidated AS is_validated,
-                  referring_pg_class.relname AS referring_table
+                  referring_pg_class.relname AS referring_table,
+                  pg_namespace.nspname AS schema
                 FROM
                   pg_catalog.pg_constraint
                 INNER JOIN
@@ -248,21 +250,17 @@ class Introspector:
                   ON (pg_constraint.confrelid = referred_pg_class.oid)
                 INNER JOIN
                   pg_catalog.pg_namespace
-                  ON (pg_namespace.oid = referred_pg_class.relnamespace)
+                  ON (pg_namespace.oid = referring_pg_class.relnamespace)
                 WHERE
                   pg_constraint.confrelid = referred_pg_class.oid
                   AND referred_pg_class.relname = {table}
-                  AND pg_namespace.nspname = {schema}
                   AND contype = 'f'
                 ORDER BY
                   constraint_name,
                   definition;
                 """)
             )
-            .format(
-                table=psycopg.sql.Literal(table),
-                schema=psycopg.sql.Literal(self.schema),
-            )
+            .format(table=psycopg.sql.Literal(table))
             .as_string(self.conn)
         )
         results = self.cur.fetchall()
@@ -273,8 +271,9 @@ class Introspector:
                 definition=definition,
                 is_validated=is_validated,
                 referring_table=referring_table,
+                schema=schema,
             )
-            for name, definition, is_validated, referring_table in results
+            for name, definition, is_validated, referring_table, schema in results
         ]
 
     def table_is_empty(self, *, table: str) -> int:
