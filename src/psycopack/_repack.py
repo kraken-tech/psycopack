@@ -68,6 +68,10 @@ class NoCreateAndUsagePrivilegeOnSchema(BaseRepackError):
     pass
 
 
+class NotTableOwner(BaseRepackError):
+    pass
+
+
 class PostBackfillBatchCallback(typing.Protocol):
     def __call__(
         self, batch: _introspect.BackfillBatch, /
@@ -790,4 +794,13 @@ class Repack:
                 f"privilege on the {self.schema} schema to create auxiliary "
                 f"objects. You can grant it to your user via:\n"
                 f"GRANT CREATE, USAGE ON SCHEMA {self.schema} TO {user};"
+            )
+
+        if not self.introspector.is_table_owner(table=self.table, schema=self.schema):
+            user = self.introspector.get_user()
+            raise NotTableOwner(
+                f"Psycopack requires the database user to have ownership of "
+                f"the table {self.schema}.{self.table}. You can grant it to "
+                f"your user via:\n"
+                f"ALTER TABLE {self.schema}.{self.table} OWNER TO {user};"
             )

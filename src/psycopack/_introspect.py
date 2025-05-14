@@ -551,3 +551,26 @@ class Introspector:
         result = self.cur.fetchone()
         assert result is not None
         return bool(result[0] and result[1])
+
+    def is_table_owner(self, *, table: str, schema: str) -> bool:
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                SELECT
+                  tableowner = current_user
+                FROM
+                  pg_tables
+                WHERE
+                  schemaname = {schema}
+                  AND tablename = {table}
+                """)
+            )
+            .format(
+                schema=psycopg.sql.Literal(schema),
+                table=psycopg.sql.Literal(table),
+            )
+            .as_string(self.conn)
+        )
+        result = self.cur.fetchone()
+        assert result is not None
+        return bool(result[0])
