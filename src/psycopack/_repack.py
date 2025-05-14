@@ -1,11 +1,8 @@
 # TODO:
-# 1. The script doesn't take into consideration which schema the tables live
-#    in. This only works if the default schema (public) is being used. In
-#    future, this needs to be changed.
-# 2. Due to the way the backfilling works, it may affect the correlation of a
+# 1. Due to the way the backfilling works, it may affect the correlation of a
 #    certain field. TODO: Investigate if doing it the "repack" way is better in
 #    such cases.
-# 3. Add support for tables with fk in other schemas.
+# 2. Add support for tables with fk in other schemas.
 import datetime
 import typing
 from collections import defaultdict
