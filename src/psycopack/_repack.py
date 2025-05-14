@@ -72,6 +72,10 @@ class NotTableOwner(BaseRepackError):
     pass
 
 
+class NoReferringTableOwnership(BaseRepackError):
+    pass
+
+
 class PostBackfillBatchCallback(typing.Protocol):
     def __call__(
         self, batch: _introspect.BackfillBatch, /
@@ -804,3 +808,19 @@ class Repack:
                 f"your user via:\n"
                 f"ALTER TABLE {self.schema}.{self.table} OWNER TO {user};"
             )
+
+        referring_tables_without_ownership = [
+            f"{fk.schema}.{fk.referring_table}"
+            for fk in self.introspector.get_referring_fks(table=self.table)
+            if not fk.is_owned_by_user
+        ]
+        if referring_tables_without_ownership:
+            user = self.introspector.get_user()
+            message = (
+                f"Psycopack requires the user to have ownership of tables that "
+                f"have foreign keys pointing to the table {self.schema}.{self.table}. "
+                f"You can grant ownership to your user via the following commands:\n"
+            )
+            for table in referring_tables_without_ownership:
+                message += f"ALTER TABLE {table} OWNER TO {user};\n"
+            raise NoReferringTableOwnership(message)

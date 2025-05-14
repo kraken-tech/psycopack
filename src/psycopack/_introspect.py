@@ -30,6 +30,7 @@ class ReferringForeignKey:
     is_validated: bool
     referring_table: str
     schema: str
+    is_owned_by_user: bool
 
 
 @dataclasses.dataclass
@@ -239,7 +240,16 @@ class Introspector:
                   pg_get_constraintdef(pg_constraint.oid) AS definition,
                   pg_constraint.convalidated AS is_validated,
                   referring_pg_class.relname AS referring_table,
-                  pg_namespace.nspname AS schema
+                  pg_namespace.nspname AS schema,
+                  (
+                    SELECT
+                      tableowner = current_user
+                    FROM
+                      pg_tables
+                    WHERE
+                      schemaname = {schema}
+                      AND tablename = referring_pg_class.relname
+                  ) AS is_owned_by_user
                 FROM
                   pg_catalog.pg_constraint
                 INNER JOIN
@@ -260,7 +270,10 @@ class Introspector:
                   definition;
                 """)
             )
-            .format(table=psycopg.sql.Literal(table))
+            .format(
+                table=psycopg.sql.Literal(table),
+                schema=psycopg.sql.Literal(self.schema),
+            )
             .as_string(self.conn)
         )
         results = self.cur.fetchall()
@@ -272,8 +285,9 @@ class Introspector:
                 is_validated=is_validated,
                 referring_table=referring_table,
                 schema=schema,
+                is_owned_by_user=is_owned_by_user,
             )
-            for name, definition, is_validated, referring_table, schema in results
+            for name, definition, is_validated, referring_table, schema, is_owned_by_user in results
         ]
 
     def table_is_empty(self, *, table: str) -> int:
