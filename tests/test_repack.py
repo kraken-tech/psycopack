@@ -13,6 +13,7 @@ from psycopack import (
     InvalidPrimaryKeyTypeForConversion,
     InvalidStageForReset,
     NoCreateAndUsagePrivilegeOnSchema,
+    NoReferencesPrivilege,
     NoReferringTableOwnership,
     NotTableOwner,
     PrimaryKeyNotFound,
@@ -1777,6 +1778,42 @@ def test_user_without_referring_table_ownership(
         with pytest.raises(
             NoReferringTableOwnership,
             match="ALTER TABLE sweet_schema.referring_table OWNER TO sweet_user;",
+        ):
+            Repack(
+                table="to_repack",
+                batch_size=1,
+                conn=connection,
+                cur=cur,
+                schema=schema,
+            )
+
+
+def test_user_without_referred_table_references_privilege(
+    connection: _psycopg.Connection,
+) -> None:
+    schema = "sweet_schema"
+    with connection.cursor() as cur:
+        cur.execute(f"CREATE SCHEMA {schema};")
+        cur.execute(f"REVOKE CREATE ON SCHEMA {schema} FROM PUBLIC;")
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=10,
+            schema=schema,
+        )
+        cur.execute("DROP USER IF EXISTS sweet_user;")
+        cur.execute("CREATE USER sweet_user;")
+        cur.execute("GRANT CREATE, USAGE ON SCHEMA sweet_schema TO sweet_user;")
+        cur.execute("ALTER TABLE sweet_schema.to_repack OWNER TO sweet_user;")
+        cur.execute("ALTER TABLE sweet_schema.referring_table OWNER TO sweet_user;")
+        cur.execute(
+            "ALTER TABLE sweet_schema.not_valid_referring_table OWNER TO sweet_user;"
+        )
+        cur.execute("SET ROLE sweet_user;")
+        with pytest.raises(
+            NoReferencesPrivilege,
+            match="GRANT REFERENCES ON TABLE sweet_schema.referred_table TO sweet_user;",
         ):
             Repack(
                 table="to_repack",

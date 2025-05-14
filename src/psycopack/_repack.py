@@ -76,6 +76,10 @@ class NoReferringTableOwnership(BaseRepackError):
     pass
 
 
+class NoReferencesPrivilege(BaseRepackError):
+    pass
+
+
 class PostBackfillBatchCallback(typing.Protocol):
     def __call__(
         self, batch: _introspect.BackfillBatch, /
@@ -824,3 +828,25 @@ class Repack:
             for table in referring_tables_without_ownership:
                 message += f"ALTER TABLE {table} OWNER TO {user};\n"
             raise NoReferringTableOwnership(message)
+
+        referred_fks_without_references_privilege = [
+            fk
+            for fk in self.introspector.get_referred_fks(
+                table=self.table, schema=self.schema
+            )
+            if "REFERENCES" not in fk.privileges
+        ]
+        if referred_fks_without_references_privilege:
+            user = self.introspector.get_user()
+            tables_missing_ownership = [
+                f"{fk.schema}.{fk.name}"
+                for fk in referred_fks_without_references_privilege
+            ]
+            message = (
+                f"Psycopack requires the user to REFERENCES privilege on tables that "
+                f"{self.schema}.{self.table} has foreign keys to. "
+                f"You can grant this privilege to your user via the following commands:\n"
+            )
+            for table in tables_missing_ownership:
+                message += f"GRANT REFERENCES ON TABLE {table} TO {user};\n"
+            raise NoReferencesPrivilege(message)
