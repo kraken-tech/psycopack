@@ -1,13 +1,11 @@
 # TODO:
-# 1. In this PoC I assume the original table doesn't have triggers to/from.
-#    In future, repacking needs to raise an error if this isn't the case.
-# 2. The script doesn't take into consideration which schema the tables live
+# 1. The script doesn't take into consideration which schema the tables live
 #    in. This only works if the default schema (public) is being used. In
 #    future, this needs to be changed.
-# 3. Due to the way the backfilling works, it may affect the correlation of a
+# 2. Due to the way the backfilling works, it may affect the correlation of a
 #    certain field. TODO: Investigate if doing it the "repack" way is better in
 #    such cases.
-# 4. Add support for tables with fk in other schemas.
+# 3. Add support for tables with fk in other schemas.
 import datetime
 import typing
 from collections import defaultdict
