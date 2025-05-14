@@ -1822,3 +1822,56 @@ def test_user_without_referred_table_references_privilege(
                 cur=cur,
                 schema=schema,
             )
+
+
+def test_user_with_bare_minimum_permissions(connection: _psycopg.Connection) -> None:
+    schema = "sweet_schema"
+    with connection.cursor() as cur:
+        cur.execute(f"CREATE SCHEMA {schema};")
+        cur.execute(f"REVOKE CREATE ON SCHEMA {schema} FROM PUBLIC;")
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=10,
+            schema=schema,
+        )
+        table_before = _collect_table_info(
+            table="to_repack",
+            connection=connection,
+            schema=schema,
+        )
+        cur.execute("DROP USER IF EXISTS sweet_user;")
+        cur.execute("CREATE USER sweet_user;")
+        cur.execute("GRANT CREATE, USAGE ON SCHEMA sweet_schema TO sweet_user;")
+        cur.execute("ALTER TABLE sweet_schema.to_repack OWNER TO sweet_user;")
+        cur.execute("ALTER TABLE sweet_schema.referring_table OWNER TO sweet_user;")
+        cur.execute(
+            "ALTER TABLE sweet_schema.not_valid_referring_table OWNER TO sweet_user;"
+        )
+        cur.execute(
+            "GRANT REFERENCES ON TABLE sweet_schema.referred_table TO sweet_user;"
+        )
+        cur.execute(
+            "GRANT REFERENCES ON TABLE sweet_schema.not_valid_referred_table TO sweet_user;"
+        )
+        cur.execute("SET ROLE sweet_user;")
+        repack = Repack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+            schema=schema,
+        )
+        repack.full()
+        table_after = _collect_table_info(
+            table="to_repack",
+            connection=connection,
+            schema=schema,
+        )
+        _assert_repack(
+            table_before=table_before,
+            table_after=table_after,
+            repack=repack,
+            cur=cur,
+        )
