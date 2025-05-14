@@ -30,6 +30,14 @@ class ReferringForeignKey:
     is_validated: bool
     referring_table: str
     schema: str
+    is_owned_by_user: bool
+
+
+@dataclasses.dataclass
+class ReferredForeignKey:
+    name: str
+    schema: str
+    privileges: list[str]
 
 
 @dataclasses.dataclass
@@ -239,7 +247,16 @@ class Introspector:
                   pg_get_constraintdef(pg_constraint.oid) AS definition,
                   pg_constraint.convalidated AS is_validated,
                   referring_pg_class.relname AS referring_table,
-                  pg_namespace.nspname AS schema
+                  pg_namespace.nspname AS schema,
+                  (
+                    SELECT
+                      tableowner = current_user
+                    FROM
+                      pg_tables
+                    WHERE
+                      schemaname = {schema}
+                      AND tablename = referring_pg_class.relname
+                  ) AS is_owned_by_user
                 FROM
                   pg_catalog.pg_constraint
                 INNER JOIN
@@ -260,7 +277,10 @@ class Introspector:
                   definition;
                 """)
             )
-            .format(table=psycopg.sql.Literal(table))
+            .format(
+                table=psycopg.sql.Literal(table),
+                schema=psycopg.sql.Literal(self.schema),
+            )
             .as_string(self.conn)
         )
         results = self.cur.fetchall()
@@ -272,8 +292,74 @@ class Introspector:
                 is_validated=is_validated,
                 referring_table=referring_table,
                 schema=schema,
+                is_owned_by_user=is_owned_by_user,
             )
-            for name, definition, is_validated, referring_table, schema in results
+            for name, definition, is_validated, referring_table, schema, is_owned_by_user in results
+        ]
+
+    def get_referred_fks(self, *, table: str, schema: str) -> list[ReferredForeignKey]:
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                SELECT
+                  referred_pg_class.relname AS referred_table,
+                  referred_pg_namespace.nspname AS referred_schema,
+                  array_agg(
+                    table_privileges.privilege_type
+                    ORDER BY table_privileges.privilege_type
+                  ) AS privileges
+                FROM
+                  pg_catalog.pg_constraint
+                INNER JOIN
+                  pg_catalog.pg_class AS referring_pg_class
+                  ON (pg_constraint.conrelid = referring_pg_class.oid)
+                INNER JOIN
+                  pg_catalog.pg_class AS referred_pg_class
+                  ON (pg_constraint.confrelid = referred_pg_class.oid)
+                INNER JOIN
+                  pg_catalog.pg_namespace AS referring_pg_namespace
+                  ON (referring_pg_namespace.oid = referring_pg_class.relnamespace)
+                INNER JOIN
+                  pg_catalog.pg_namespace AS referred_pg_namespace
+                  ON (referred_pg_namespace.oid = referred_pg_class.relnamespace)
+                LEFT OUTER JOIN
+                  information_schema.table_privileges
+                  ON (
+                    table_privileges.table_name = referred_pg_class.relname
+                    AND table_privileges.table_schema = referred_pg_namespace.nspname
+                  )
+                WHERE
+                  pg_constraint.conrelid = referring_pg_class.oid
+                  AND referring_pg_class.relname = {table}
+                  AND referring_pg_namespace.nspname = {schema}
+                  AND pg_constraint.contype = 'f'
+                GROUP BY
+                  referred_pg_namespace.nspname,
+                  referred_pg_class.relname
+                ORDER BY
+                  referred_pg_namespace.nspname,
+                  referred_pg_class.relname;
+                """)
+            )
+            .format(
+                table=psycopg.sql.Literal(table),
+                schema=psycopg.sql.Literal(schema),
+            )
+            .as_string(self.conn)
+        )
+        results = self.cur.fetchall()
+        assert results is not None
+        return [
+            ReferredForeignKey(
+                name=name,
+                schema=schema,
+                privileges=(
+                    privileges.strip("{}").split(",")
+                    if "NULL" not in privileges
+                    else []
+                ),
+            )
+            for name, schema, privileges in results
         ]
 
     def table_is_empty(self, *, table: str) -> int:
@@ -529,3 +615,48 @@ class Introspector:
         if not (result := self.cur.fetchone()):
             return None
         return BackfillBatch(id=result[0], start=result[1], end=result[2])
+
+    def get_user(self) -> str:
+        self.cur.execute(psycopg.sql.SQL("SELECT current_user;").as_string(self.conn))
+        result = self.cur.fetchone()
+        assert result is not None
+        return str(result[0])
+
+    def has_create_and_usage_privilege_on_schema(self) -> bool:
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                SELECT
+                  has_schema_privilege({schema}, 'CREATE'),
+                  has_schema_privilege({schema}, 'USAGE');
+                """)
+            )
+            .format(schema=psycopg.sql.Literal(self.schema))
+            .as_string(self.conn)
+        )
+        result = self.cur.fetchone()
+        assert result is not None
+        return bool(result[0] and result[1])
+
+    def is_table_owner(self, *, table: str, schema: str) -> bool:
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                SELECT
+                  tableowner = current_user
+                FROM
+                  pg_tables
+                WHERE
+                  schemaname = {schema}
+                  AND tablename = {table}
+                """)
+            )
+            .format(
+                schema=psycopg.sql.Literal(schema),
+                table=psycopg.sql.Literal(table),
+            )
+            .as_string(self.conn)
+        )
+        result = self.cur.fetchone()
+        assert result is not None
+        return bool(result[0])

@@ -12,6 +12,10 @@ from psycopack import (
     InvalidIndexes,
     InvalidPrimaryKeyTypeForConversion,
     InvalidStageForReset,
+    NoCreateAndUsagePrivilegeOnSchema,
+    NoReferencesPrivilege,
+    NoReferringTableOwnership,
+    NotTableOwner,
     PrimaryKeyNotFound,
     ReferringForeignKeyInDifferentSchema,
     Repack,
@@ -1653,3 +1657,221 @@ def test_with_fks_from_another_schema(connection: _psycopg.Connection) -> None:
             ReferringForeignKeyInDifferentSchema, match=f"{schema}.referring_table"
         ):
             repack.full()
+
+
+def test_without_schema_privileges(connection: _psycopg.Connection) -> None:
+    schema = "sweet_schema"
+    with connection.cursor() as cur:
+        cur.execute("SELECT current_user;")
+        result = cur.fetchone()
+        assert result is not None
+        original_user = result[0]
+
+        cur.execute(f"CREATE SCHEMA {schema};")
+        cur.execute(f"REVOKE CREATE ON SCHEMA {schema} FROM PUBLIC;")
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=10,
+            pk_type="integer",
+            schema=schema,
+        )
+        cur.execute("DROP USER IF EXISTS sweet_user;")
+        cur.execute("CREATE USER sweet_user;")
+        # No CREATE nor USAGE privilege by default.
+        cur.execute("SET ROLE sweet_user;")
+        with pytest.raises(
+            NoCreateAndUsagePrivilegeOnSchema,
+            match="GRANT CREATE, USAGE ON SCHEMA sweet_schema TO sweet_user;",
+        ):
+            Repack(
+                table="to_repack",
+                batch_size=1,
+                conn=connection,
+                cur=cur,
+                schema=schema,
+            )
+        cur.execute(f"SET ROLE '{original_user}';")
+        # CREATE by itself is not enough; need USAGE too.
+        cur.execute("GRANT CREATE ON SCHEMA sweet_schema TO sweet_user;")
+        cur.execute("SET ROLE sweet_user;")
+        with pytest.raises(
+            NoCreateAndUsagePrivilegeOnSchema,
+            match="GRANT CREATE, USAGE ON SCHEMA sweet_schema TO sweet_user;",
+        ):
+            Repack(
+                table="to_repack",
+                batch_size=1,
+                conn=connection,
+                cur=cur,
+                schema=schema,
+            )
+        cur.execute(f"SET ROLE '{original_user}';")
+        cur.execute("REVOKE CREATE ON SCHEMA sweet_schema FROM sweet_user;")
+        # USAGE by itself is not enough; need CREATE too.
+        cur.execute("GRANT USAGE ON SCHEMA sweet_schema TO sweet_user;")
+        cur.execute("SET ROLE sweet_user;")
+        with pytest.raises(
+            NoCreateAndUsagePrivilegeOnSchema,
+            match="GRANT CREATE, USAGE ON SCHEMA sweet_schema TO sweet_user;",
+        ):
+            Repack(
+                table="to_repack",
+                batch_size=1,
+                conn=connection,
+                cur=cur,
+                schema=schema,
+            )
+
+
+def test_user_without_table_ownership(
+    connection: _psycopg.Connection,
+) -> None:
+    schema = "sweet_schema"
+    with connection.cursor() as cur:
+        cur.execute(f"CREATE SCHEMA {schema};")
+        cur.execute(f"REVOKE CREATE ON SCHEMA {schema} FROM PUBLIC;")
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=10,
+            schema=schema,
+        )
+        cur.execute("DROP USER IF EXISTS sweet_user;")
+        cur.execute("CREATE USER sweet_user;")
+        cur.execute("GRANT CREATE, USAGE ON SCHEMA sweet_schema TO sweet_user;")
+        cur.execute("SET ROLE sweet_user;")
+        with pytest.raises(
+            NotTableOwner,
+            match="ALTER TABLE sweet_schema.to_repack OWNER TO sweet_user;",
+        ):
+            Repack(
+                table="to_repack",
+                batch_size=1,
+                conn=connection,
+                cur=cur,
+                schema=schema,
+            )
+
+
+def test_user_without_referring_table_ownership(
+    connection: _psycopg.Connection,
+) -> None:
+    schema = "sweet_schema"
+    with connection.cursor() as cur:
+        cur.execute(f"CREATE SCHEMA {schema};")
+        cur.execute(f"REVOKE CREATE ON SCHEMA {schema} FROM PUBLIC;")
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=10,
+            schema=schema,
+        )
+        cur.execute("DROP USER IF EXISTS sweet_user;")
+        cur.execute("CREATE USER sweet_user;")
+        cur.execute("GRANT CREATE, USAGE ON SCHEMA sweet_schema TO sweet_user;")
+        cur.execute("ALTER TABLE sweet_schema.to_repack OWNER TO sweet_user;")
+        cur.execute("SET ROLE sweet_user;")
+        with pytest.raises(
+            NoReferringTableOwnership,
+            match="ALTER TABLE sweet_schema.referring_table OWNER TO sweet_user;",
+        ):
+            Repack(
+                table="to_repack",
+                batch_size=1,
+                conn=connection,
+                cur=cur,
+                schema=schema,
+            )
+
+
+def test_user_without_referred_table_references_privilege(
+    connection: _psycopg.Connection,
+) -> None:
+    schema = "sweet_schema"
+    with connection.cursor() as cur:
+        cur.execute(f"CREATE SCHEMA {schema};")
+        cur.execute(f"REVOKE CREATE ON SCHEMA {schema} FROM PUBLIC;")
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=10,
+            schema=schema,
+        )
+        cur.execute("DROP USER IF EXISTS sweet_user;")
+        cur.execute("CREATE USER sweet_user;")
+        cur.execute("GRANT CREATE, USAGE ON SCHEMA sweet_schema TO sweet_user;")
+        cur.execute("ALTER TABLE sweet_schema.to_repack OWNER TO sweet_user;")
+        cur.execute("ALTER TABLE sweet_schema.referring_table OWNER TO sweet_user;")
+        cur.execute(
+            "ALTER TABLE sweet_schema.not_valid_referring_table OWNER TO sweet_user;"
+        )
+        cur.execute("SET ROLE sweet_user;")
+        with pytest.raises(
+            NoReferencesPrivilege,
+            match="GRANT REFERENCES ON TABLE sweet_schema.referred_table TO sweet_user;",
+        ):
+            Repack(
+                table="to_repack",
+                batch_size=1,
+                conn=connection,
+                cur=cur,
+                schema=schema,
+            )
+
+
+def test_user_with_bare_minimum_permissions(connection: _psycopg.Connection) -> None:
+    schema = "sweet_schema"
+    with connection.cursor() as cur:
+        cur.execute(f"CREATE SCHEMA {schema};")
+        cur.execute(f"REVOKE CREATE ON SCHEMA {schema} FROM PUBLIC;")
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=10,
+            schema=schema,
+        )
+        table_before = _collect_table_info(
+            table="to_repack",
+            connection=connection,
+            schema=schema,
+        )
+        cur.execute("DROP USER IF EXISTS sweet_user;")
+        cur.execute("CREATE USER sweet_user;")
+        cur.execute("GRANT CREATE, USAGE ON SCHEMA sweet_schema TO sweet_user;")
+        cur.execute("ALTER TABLE sweet_schema.to_repack OWNER TO sweet_user;")
+        cur.execute("ALTER TABLE sweet_schema.referring_table OWNER TO sweet_user;")
+        cur.execute(
+            "ALTER TABLE sweet_schema.not_valid_referring_table OWNER TO sweet_user;"
+        )
+        cur.execute(
+            "GRANT REFERENCES ON TABLE sweet_schema.referred_table TO sweet_user;"
+        )
+        cur.execute(
+            "GRANT REFERENCES ON TABLE sweet_schema.not_valid_referred_table TO sweet_user;"
+        )
+        cur.execute("SET ROLE sweet_user;")
+        repack = Repack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+            schema=schema,
+        )
+        repack.full()
+        table_after = _collect_table_info(
+            table="to_repack",
+            connection=connection,
+            schema=schema,
+        )
+        _assert_repack(
+            table_before=table_before,
+            table_after=table_after,
+            repack=repack,
+            cur=cur,
+        )

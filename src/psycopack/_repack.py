@@ -64,6 +64,22 @@ class ReferringForeignKeyInDifferentSchema(BaseRepackError):
     pass
 
 
+class NoCreateAndUsagePrivilegeOnSchema(BaseRepackError):
+    pass
+
+
+class NotTableOwner(BaseRepackError):
+    pass
+
+
+class NoReferringTableOwnership(BaseRepackError):
+    pass
+
+
+class NoReferencesPrivilege(BaseRepackError):
+    pass
+
+
 class PostBackfillBatchCallback(typing.Protocol):
     def __call__(
         self, batch: _introspect.BackfillBatch, /
@@ -175,6 +191,7 @@ class Repack:
         )
         self._pk_column = ""
         self.schema = schema
+        self._check_user_permissions()
 
     @property
     def pk_column(self) -> str:
@@ -776,3 +793,60 @@ class Repack:
                 self.command.validate_constraint(
                     table=fk.referring_table, constraint=constraint_name
                 )
+
+    def _check_user_permissions(self) -> None:
+        if not self.introspector.has_create_and_usage_privilege_on_schema():
+            user = self.introspector.get_user()
+            raise NoCreateAndUsagePrivilegeOnSchema(
+                f"Psycopack requires the database user to have CREATE and USAGE "
+                f"privilege on the {self.schema} schema to create auxiliary "
+                f"objects. You can grant it to your user via:\n"
+                f"GRANT CREATE, USAGE ON SCHEMA {self.schema} TO {user};"
+            )
+
+        if not self.introspector.is_table_owner(table=self.table, schema=self.schema):
+            user = self.introspector.get_user()
+            raise NotTableOwner(
+                f"Psycopack requires the database user to have ownership of "
+                f"the table {self.schema}.{self.table}. You can grant it to "
+                f"your user via:\n"
+                f"ALTER TABLE {self.schema}.{self.table} OWNER TO {user};"
+            )
+
+        referring_tables_without_ownership = [
+            f"{fk.schema}.{fk.referring_table}"
+            for fk in self.introspector.get_referring_fks(table=self.table)
+            if not fk.is_owned_by_user
+        ]
+        if referring_tables_without_ownership:
+            user = self.introspector.get_user()
+            message = (
+                f"Psycopack requires the user to have ownership of tables that "
+                f"have foreign keys pointing to the table {self.schema}.{self.table}. "
+                f"You can grant ownership to your user via the following commands:\n"
+            )
+            for table in referring_tables_without_ownership:
+                message += f"ALTER TABLE {table} OWNER TO {user};\n"
+            raise NoReferringTableOwnership(message)
+
+        referred_fks_without_references_privilege = [
+            fk
+            for fk in self.introspector.get_referred_fks(
+                table=self.table, schema=self.schema
+            )
+            if "REFERENCES" not in fk.privileges
+        ]
+        if referred_fks_without_references_privilege:
+            user = self.introspector.get_user()
+            tables_missing_ownership = [
+                f"{fk.schema}.{fk.name}"
+                for fk in referred_fks_without_references_privilege
+            ]
+            message = (
+                f"Psycopack requires the user to REFERENCES privilege on tables that "
+                f"{self.schema}.{self.table} has foreign keys to. "
+                f"You can grant this privilege to your user via the following commands:\n"
+            )
+            for table in tables_missing_ownership:
+                message += f"GRANT REFERENCES ON TABLE {table} TO {user};\n"
+            raise NoReferencesPrivilege(message)
