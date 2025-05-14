@@ -64,6 +64,10 @@ class ReferringForeignKeyInDifferentSchema(BaseRepackError):
     pass
 
 
+class NoCreateAndUsagePrivilegeOnSchema(BaseRepackError):
+    pass
+
+
 class PostBackfillBatchCallback(typing.Protocol):
     def __call__(
         self, batch: _introspect.BackfillBatch, /
@@ -175,6 +179,7 @@ class Repack:
         )
         self._pk_column = ""
         self.schema = schema
+        self._check_user_permissions()
 
     @property
     def pk_column(self) -> str:
@@ -776,3 +781,13 @@ class Repack:
                 self.command.validate_constraint(
                     table=fk.referring_table, constraint=constraint_name
                 )
+
+    def _check_user_permissions(self) -> None:
+        if not self.introspector.has_create_and_usage_privilege_on_schema():
+            user = self.introspector.get_user()
+            raise NoCreateAndUsagePrivilegeOnSchema(
+                f"Psycopack requires the database user to have CREATE and USAGE "
+                f"privilege on the {self.schema} schema to create auxiliary "
+                f"objects. You can grant it to your user via:\n"
+                f"GRANT CREATE, USAGE ON SCHEMA {self.schema} TO {user};"
+            )

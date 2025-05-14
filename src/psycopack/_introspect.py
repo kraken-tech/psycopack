@@ -529,3 +529,25 @@ class Introspector:
         if not (result := self.cur.fetchone()):
             return None
         return BackfillBatch(id=result[0], start=result[1], end=result[2])
+
+    def get_user(self) -> str:
+        self.cur.execute(psycopg.sql.SQL("SELECT current_user;").as_string(self.conn))
+        result = self.cur.fetchone()
+        assert result is not None
+        return str(result[0])
+
+    def has_create_and_usage_privilege_on_schema(self) -> bool:
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                SELECT
+                  has_schema_privilege({schema}, 'CREATE'),
+                  has_schema_privilege({schema}, 'USAGE');
+                """)
+            )
+            .format(schema=psycopg.sql.Literal(self.schema))
+            .as_string(self.conn)
+        )
+        result = self.cur.fetchone()
+        assert result is not None
+        return bool(result[0] and result[1])

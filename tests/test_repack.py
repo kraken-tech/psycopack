@@ -12,6 +12,7 @@ from psycopack import (
     InvalidIndexes,
     InvalidPrimaryKeyTypeForConversion,
     InvalidStageForReset,
+    NoCreateAndUsagePrivilegeOnSchema,
     PrimaryKeyNotFound,
     ReferringForeignKeyInDifferentSchema,
     Repack,
@@ -1653,3 +1654,69 @@ def test_with_fks_from_another_schema(connection: _psycopg.Connection) -> None:
             ReferringForeignKeyInDifferentSchema, match=f"{schema}.referring_table"
         ):
             repack.full()
+
+
+def test_without_schema_privileges(connection: _psycopg.Connection) -> None:
+    schema = "sweet_schema"
+    with connection.cursor() as cur:
+        cur.execute("SELECT current_user;")
+        result = cur.fetchone()
+        assert result is not None
+        original_user = result[0]
+
+        cur.execute(f"CREATE SCHEMA {schema};")
+        cur.execute(f"REVOKE CREATE ON SCHEMA {schema} FROM PUBLIC;")
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=10,
+            pk_type="integer",
+            schema=schema,
+        )
+        cur.execute("DROP USER IF EXISTS sweet_user;")
+        cur.execute("CREATE USER sweet_user;")
+        # No CREATE nor USAGE privilege by default.
+        cur.execute("SET ROLE sweet_user;")
+        with pytest.raises(
+            NoCreateAndUsagePrivilegeOnSchema,
+            match="GRANT CREATE, USAGE ON SCHEMA sweet_schema TO sweet_user;",
+        ):
+            Repack(
+                table="to_repack",
+                batch_size=1,
+                conn=connection,
+                cur=cur,
+                schema=schema,
+            )
+        cur.execute(f"SET ROLE '{original_user}';")
+        # CREATE by itself is not enough; need USAGE too.
+        cur.execute("GRANT CREATE ON SCHEMA sweet_schema TO sweet_user;")
+        cur.execute("SET ROLE sweet_user;")
+        with pytest.raises(
+            NoCreateAndUsagePrivilegeOnSchema,
+            match="GRANT CREATE, USAGE ON SCHEMA sweet_schema TO sweet_user;",
+        ):
+            Repack(
+                table="to_repack",
+                batch_size=1,
+                conn=connection,
+                cur=cur,
+                schema=schema,
+            )
+        cur.execute(f"SET ROLE '{original_user}';")
+        cur.execute("REVOKE CREATE ON SCHEMA sweet_schema FROM sweet_user;")
+        # USAGE by itself is not enough; need CREATE too.
+        cur.execute("GRANT USAGE ON SCHEMA sweet_schema TO sweet_user;")
+        cur.execute("SET ROLE sweet_user;")
+        with pytest.raises(
+            NoCreateAndUsagePrivilegeOnSchema,
+            match="GRANT CREATE, USAGE ON SCHEMA sweet_schema TO sweet_user;",
+        ):
+            Repack(
+                table="to_repack",
+                batch_size=1,
+                conn=connection,
+                cur=cur,
+                schema=schema,
+            )
