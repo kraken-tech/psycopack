@@ -2,6 +2,7 @@
 A customizable way to repack a table using psycopg.
 """
 
+from ._conn import get_db_connection
 from ._introspect import BackfillBatch
 from ._repack import (
     BaseRepackError,
@@ -45,4 +46,5 @@ __all__ = (
     "TableHasTriggers",
     "TableIsEmpty",
     "UnsupportedPrimaryKey",
+    "get_db_connection",
 )
