@@ -148,11 +148,14 @@ class Repack:
         )
 
         self.table = table
+        self.schema = schema
+        self._check_table_exists()
+        self._check_user_permissions()
+
         self.batch_size = batch_size
         self.post_backfill_batch_callback = post_backfill_batch_callback
         self.lock_timeout = lock_timeout
         self.convert_pk_to_bigint = convert_pk_to_bigint
-
         # Names for the copy table.
         self.copy_table = self._get_copy_table_name()
         self.id_seq = f"{self.copy_table}_id_seq"
@@ -185,8 +188,6 @@ class Repack:
             schema=schema,
         )
         self._pk_column = ""
-        self.schema = schema
-        self._check_user_permissions()
 
     @property
     def pk_column(self) -> str:
@@ -845,3 +846,10 @@ class Repack:
             for table in tables_missing_ownership:
                 message += f"GRANT REFERENCES ON TABLE {table} TO {user};\n"
             raise NoReferencesPrivilege(message)
+
+    def _check_table_exists(self) -> None:
+        oid = self.introspector.get_table_oid(table=self.table)
+        if oid is None:
+            raise TableDoesNotExist(
+                f'Table "{self.schema}.{self.table}" does not exist.'
+            )
