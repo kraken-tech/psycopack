@@ -7,7 +7,7 @@ import datetime
 import typing
 from collections import defaultdict
 
-from . import _commands, _const, _cur, _identifiers, _introspect, _tracker
+from . import _commands, _cur, _identifiers, _introspect, _registry, _tracker
 from . import _psycopg as psycopg
 
 
@@ -156,23 +156,26 @@ class Repack:
         self.post_backfill_batch_callback = post_backfill_batch_callback
         self.lock_timeout = lock_timeout
         self.convert_pk_to_bigint = convert_pk_to_bigint
-        # Names for the copy table.
-        self.copy_table = self._get_copy_table_name()
-        self.id_seq = f"{self.copy_table}_id_seq"
-        self.function = f"{self.copy_table}_fun"
-        self.trigger = f"{self.copy_table}_tgr"
-        self.backfill_log = f"{self.copy_table}_backfill"
 
+        # Names for psycopack objects are stored in the Registry
+        self.registry = _registry.Registry(
+            conn=self.conn,
+            cur=self.cur,
+            schema=schema,
+            introspector=self.introspector,
+            command=self.command,
+            table=table,
+        )
+        registry_row = self.registry.get_registry_row()
+        self.copy_table = registry_row.copy_table
+        self.id_seq = registry_row.id_seq
+        self.function = registry_row.function
+        self.trigger = registry_row.trigger
+        self.backfill_log = registry_row.backfill_log
         # Names after the original table once it has been repacked and swapped.
-        self.repacked_name = self.copy_table.replace(
-            _const.NAME_PREFIX, _const.REPACKED_NAME_PREFIX
-        )
-        self.repacked_function = self.function.replace(
-            _const.NAME_PREFIX, _const.REPACKED_NAME_PREFIX
-        )
-        self.repacked_trigger = self.trigger.replace(
-            _const.NAME_PREFIX, _const.REPACKED_NAME_PREFIX
-        )
+        self.repacked_name = registry_row.repacked_name
+        self.repacked_function = registry_row.repacked_function
+        self.repacked_trigger = registry_row.repacked_trigger
 
         self.tracker = _tracker.Tracker(
             table=self.table,
@@ -493,6 +496,7 @@ class Repack:
 
                 self.command.drop_table_if_exists(table=self.repacked_name)
                 self.command.drop_table_if_exists(table=self.backfill_log)
+                self.registry.delete_row_for(table=self.table)
 
     def reset(self) -> None:
         current_stage = self.tracker.get_current_stage()
@@ -592,12 +596,6 @@ class Repack:
                 ),
                 definition=constraint.definition,
             )
-
-    def _get_copy_table_name(self) -> str:
-        oid = self.introspector.get_table_oid(table=self.table)
-        if oid is None:
-            raise TableDoesNotExist(f'Table "{self.table}" does not exist.')
-        return f"{_const.NAME_PREFIX}_{oid}"
 
     def _create_copy_function(self) -> None:
         self.command.drop_function_if_exists(function=self.function)

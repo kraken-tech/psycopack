@@ -23,6 +23,7 @@ from psycopack import (
     TableHasTriggers,
     TableIsEmpty,
     UnsupportedPrimaryKey,
+    _const,
     _cur,
     _introspect,
     _psycopg,
@@ -137,6 +138,13 @@ def _assert_repack(
 
     # The tracker table itself will also be deleted after the clean up process.
     assert repack.introspector.get_table_oid(table=repack.tracker.tracker_table) is None
+
+    # The row in the Registry will also be removed after the process is done.
+    cur.execute(
+        f"SELECT 1 FROM {repack.schema}.{_const.PSYCOPACK_REGISTRY} "
+        f"WHERE original_table = '{repack.table}';"
+    )
+    assert cur.fetchone() is None
 
 
 def _assert_reset(repack: Repack, cur: _psycopg.Cursor) -> None:
@@ -1877,7 +1885,6 @@ def test_user_with_bare_minimum_permissions(connection: _psycopg.Connection) -> 
         )
 
 
-@pytest.mark.xfail
 def test_when_repack_is_reinstantiated_after_swapping(
     connection: _psycopg.Connection,
 ) -> None:
