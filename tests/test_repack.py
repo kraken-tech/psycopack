@@ -23,6 +23,7 @@ from psycopack import (
     TableHasTriggers,
     TableIsEmpty,
     UnsupportedPrimaryKey,
+    _const,
     _cur,
     _introspect,
     _psycopg,
@@ -137,6 +138,13 @@ def _assert_repack(
 
     # The tracker table itself will also be deleted after the clean up process.
     assert repack.introspector.get_table_oid(table=repack.tracker.tracker_table) is None
+
+    # The row in the Registry will also be removed after the process is done.
+    cur.execute(
+        f"SELECT 1 FROM {repack.schema}.{_const.PSYCOPACK_REGISTRY} "
+        f"WHERE original_table = '{repack.table}';"
+    )
+    assert cur.fetchone() is None
 
 
 def _assert_reset(repack: Repack, cur: _psycopg.Cursor) -> None:
@@ -1869,6 +1877,63 @@ def test_user_with_bare_minimum_permissions(connection: _psycopg.Connection) -> 
             connection=connection,
             schema=schema,
         )
+        _assert_repack(
+            table_before=table_before,
+            table_after=table_after,
+            repack=repack,
+            cur=cur,
+        )
+
+
+def test_when_repack_is_reinstantiated_after_swapping(
+    connection: _psycopg.Connection,
+) -> None:
+    """
+    This test covers the following bug case:
+
+    - The user runs the swap() command.
+    - Now the copy table has been swapped with the original.
+    - Their script crashes and they have to re-instantiate the Repack class.
+    - The new Repack instance thinks that the recently-swapped class is the
+      original.
+    - The instance can't find any existing Psycopack objects, because they are
+      all named after the OID of the original table.
+    - Psycopack can't finish the process because it thinks the process never
+      started.
+
+    The Psycopack process should pick up where it left, no matter if the user
+    has re-instantiated the class after the swap or not.
+    """
+    with connection.cursor() as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+        )
+        table_before = _collect_table_info(table="to_repack", connection=connection)
+        repack = Repack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+        )
+        repack.pre_validate()
+        repack.setup_repacking()
+        repack.backfill()
+        repack.sync_schemas()
+        repack.swap()
+
+        # Re-instantiate to trigger the edge-case
+        new_repack = Repack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+        )
+        # Pick up from clean-up
+        new_repack.clean_up()
+
+        table_after = _collect_table_info(table="to_repack", connection=connection)
         _assert_repack(
             table_before=table_before,
             table_after=table_after,
