@@ -17,8 +17,8 @@ from psycopack import (
     NoReferringTableOwnership,
     NotTableOwner,
     PrimaryKeyNotFound,
+    Psycopack,
     ReferringForeignKeyInDifferentSchema,
-    Repack,
     TableDoesNotExist,
     TableHasTriggers,
     TableIsEmpty,
@@ -76,7 +76,7 @@ class _TriggerInfo:
     repacked_trigger_exists: bool
 
 
-def _get_trigger_info(repack: Repack, cur: _psycopg.Cursor) -> _TriggerInfo:
+def _get_trigger_info(repack: Psycopack, cur: _psycopg.Cursor) -> _TriggerInfo:
     cur.execute(f"SELECT 1 FROM pg_trigger WHERE tgname = '{repack.trigger}'")
     trigger_exists = cur.fetchone() is not None
     cur.execute(f"SELECT 1 FROM pg_trigger WHERE tgname = '{repack.repacked_trigger}'")
@@ -92,7 +92,7 @@ class _FunctionInfo:
     repacked_function_exists: bool
 
 
-def _get_function_info(repack: Repack, cur: _psycopg.Cursor) -> _FunctionInfo:
+def _get_function_info(repack: Psycopack, cur: _psycopg.Cursor) -> _FunctionInfo:
     cur.execute(f"SELECT 1 FROM pg_proc WHERE proname = '{repack.function}'")
     function_exists = cur.fetchone() is not None
     cur.execute(f"SELECT 1 FROM pg_proc WHERE proname = '{repack.repacked_function}'")
@@ -108,7 +108,7 @@ class _SequenceInfo:
     sequence_exists: bool
 
 
-def _get_sequence_info(repack: Repack, cur: _psycopg.Cursor) -> _SequenceInfo:
+def _get_sequence_info(repack: Psycopack, cur: _psycopg.Cursor) -> _SequenceInfo:
     cur.execute(f"SELECT 1 FROM pg_sequences WHERE sequencename = '{repack.id_seq}'")
     sequence_exists = cur.fetchone() is not None
     return _SequenceInfo(sequence_exists=sequence_exists)
@@ -117,7 +117,7 @@ def _get_sequence_info(repack: Repack, cur: _psycopg.Cursor) -> _SequenceInfo:
 def _assert_repack(
     table_before: _TableInfo,
     table_after: _TableInfo,
-    repack: Repack,
+    repack: Psycopack,
     cur: _psycopg.Cursor,
 ) -> None:
     # They aren't the same tables (thus different oids), but everything else is
@@ -147,7 +147,7 @@ def _assert_repack(
     assert cur.fetchone() is None
 
 
-def _assert_reset(repack: Repack, cur: _psycopg.Cursor) -> None:
+def _assert_reset(repack: Psycopack, cur: _psycopg.Cursor) -> None:
     assert _get_trigger_info(repack, cur).trigger_exists is False
     assert _get_function_info(repack, cur).function_exists is False
     assert _get_sequence_info(repack, cur).sequence_exists is False
@@ -169,7 +169,7 @@ def test_repack_full(connection: _psycopg.Connection, pk_type: str) -> None:
             pk_type=pk_type,
         )
         table_before = _collect_table_info(table="to_repack", connection=connection)
-        repack = Repack(
+        repack = Psycopack(
             table="to_repack",
             batch_size=1,
             conn=connection,
@@ -210,7 +210,7 @@ def test_repack_full_with_identity_pk(
             pk_type=pk_type,
         )
         table_before = _collect_table_info(table="to_repack", connection=connection)
-        repack = Repack(
+        repack = Psycopack(
             table="to_repack",
             batch_size=1,
             conn=connection,
@@ -246,7 +246,7 @@ def test_repack_full_with_identity_pk(
 def test_when_table_does_not_exist(connection: _psycopg.Connection) -> None:
     with connection.cursor() as cur:
         with pytest.raises(TableDoesNotExist):
-            Repack(
+            Psycopack(
                 table="to_repack",
                 batch_size=1,
                 conn=connection,
@@ -259,7 +259,7 @@ def test_when_table_is_empty(connection: _psycopg.Connection) -> None:
         cur.execute("CREATE TABLE empty_table (id SERIAL PRIMARY KEY);")
 
         with pytest.raises(TableIsEmpty):
-            Repack(
+            Psycopack(
                 table="empty_table",
                 batch_size=1,
                 conn=connection,
@@ -282,7 +282,7 @@ def test_repack_full_after_pre_validate_called(connection: _psycopg.Connection) 
             rows=100,
         )
         table_before = _collect_table_info(table="to_repack", connection=connection)
-        repack = Repack(
+        repack = Psycopack(
             table="to_repack",
             batch_size=1,
             conn=connection,
@@ -315,7 +315,7 @@ def test_repack_full_after_setup_called(connection: _psycopg.Connection) -> None
             rows=100,
         )
         table_before = _collect_table_info(table="to_repack", connection=connection)
-        repack = Repack(
+        repack = Psycopack(
             table="to_repack",
             batch_size=1,
             conn=connection,
@@ -351,7 +351,7 @@ def test_repack_full_after_backfill(connection: _psycopg.Connection) -> None:
             rows=100,
         )
         table_before = _collect_table_info(table="to_repack", connection=connection)
-        repack = Repack(
+        repack = Psycopack(
             table="to_repack",
             batch_size=1,
             conn=connection,
@@ -388,7 +388,7 @@ def test_repack_full_after_sync_schemas_called(connection: _psycopg.Connection) 
             rows=100,
         )
         table_before = _collect_table_info(table="to_repack", connection=connection)
-        repack = Repack(
+        repack = Psycopack(
             table="to_repack",
             batch_size=1,
             conn=connection,
@@ -427,7 +427,7 @@ def test_repack_full_after_swap_called(connection: _psycopg.Connection) -> None:
             rows=100,
         )
         table_before = _collect_table_info(table="to_repack", connection=connection)
-        repack = Repack(
+        repack = Psycopack(
             table="to_repack",
             batch_size=1,
             conn=connection,
@@ -463,7 +463,7 @@ def test_clean_up_finishes_the_repacking(connection: _psycopg.Connection) -> Non
             rows=100,
         )
         table_before = _collect_table_info(table="to_repack", connection=connection)
-        repack = Repack(
+        repack = Psycopack(
             table="to_repack",
             batch_size=1,
             conn=connection,
@@ -495,7 +495,7 @@ def test_sync_schemas_is_reentrant_and_idempotent(
             rows=100,
         )
         table_before = _collect_table_info(table="to_repack", connection=connection)
-        repack = Repack(
+        repack = Psycopack(
             table="to_repack",
             batch_size=1,
             conn=connection,
@@ -597,7 +597,7 @@ def test_when_tracker_removed_after_sync_schemas(
             rows=100,
         )
         table_before = _collect_table_info(table="to_repack", connection=connection)
-        repack = Repack(
+        repack = Psycopack(
             table="to_repack",
             batch_size=1,
             conn=connection,
@@ -642,7 +642,7 @@ def test_when_tracker_table_current_row_is_deleted(
             table_name="to_repack",
             rows=100,
         )
-        repack = Repack(
+        repack = Psycopack(
             table="to_repack",
             batch_size=1,
             conn=connection,
@@ -677,7 +677,7 @@ def test_when_rogue_row_inserted_in_tracker_table(
             table_name="to_repack",
             rows=100,
         )
-        repack = Repack(
+        repack = Psycopack(
             table="to_repack",
             batch_size=1,
             conn=connection,
@@ -718,7 +718,7 @@ def test_table_to_repack_deleted_after_pre_validation(
             table_name="to_repack",
             rows=100,
         )
-        repack = Repack(
+        repack = Psycopack(
             table="to_repack",
             batch_size=1,
             conn=connection,
@@ -741,7 +741,7 @@ def test_trigger_deleted_after_setup(connection: _psycopg.Connection) -> None:
             table_name="to_repack",
             rows=100,
         )
-        repack = Repack(
+        repack = Psycopack(
             table="to_repack",
             batch_size=1,
             conn=connection,
@@ -767,7 +767,7 @@ def test_cannot_repeat_finished_stage(connection: _psycopg.Connection) -> None:
             rows=100,
         )
         table_before = _collect_table_info(table="to_repack", connection=connection)
-        repack = Repack(
+        repack = Psycopack(
             table="to_repack",
             batch_size=1,
             conn=connection,
@@ -794,7 +794,7 @@ def test_cannot_repeat_finished_stage(connection: _psycopg.Connection) -> None:
             repack.swap()
 
         repack.clean_up()
-        with pytest.raises(_tracker.InvalidRepackingSetup):
+        with pytest.raises(_tracker.InvalidPsycopackSetup):
             # The clean up process above already deleted all repacking
             # relations, including the tracker table. So trying to call it
             # again indicates trying to start repacking from scratch straight
@@ -819,37 +819,37 @@ def test_cannot_skip_order_of_stages(connection: _psycopg.Connection) -> None:
             rows=100,
         )
         table_before = _collect_table_info(table="to_repack", connection=connection)
-        repack = Repack(
+        repack = Psycopack(
             table="to_repack",
             batch_size=1,
             conn=connection,
             cur=cur,
         )
-        with pytest.raises(_tracker.InvalidRepackingSetup):
+        with pytest.raises(_tracker.InvalidPsycopackSetup):
             # Can't initialise a repacking without going through pre-validation
             # first.
             repack.setup_repacking()
 
         repack.pre_validate()
 
-        with pytest.raises(_tracker.InvalidRepackingStep):
+        with pytest.raises(_tracker.InvalidPsycopackStep):
             # Can't go to backfill without setting up first.
             repack.backfill()
 
         repack.setup_repacking()
 
-        with pytest.raises(_tracker.InvalidRepackingStep):
+        with pytest.raises(_tracker.InvalidPsycopackStep):
             # Can't go to sync schemas without backfilling first
             repack.sync_schemas()
 
         repack.backfill()
 
-        with pytest.raises(_tracker.InvalidRepackingStep):
+        with pytest.raises(_tracker.InvalidPsycopackStep):
             # Can't go to swap without syncing schemas first.
             repack.swap()
 
         repack.sync_schemas()
-        with pytest.raises(_tracker.InvalidRepackingStep):
+        with pytest.raises(_tracker.InvalidPsycopackStep):
             # Can't go to clean up without swapping first.
             repack.clean_up()
 
@@ -885,7 +885,7 @@ def test_revert_swap_after_swap_called(
             ommit_sequence=ommit_sequence,
         )
         table_before = _collect_table_info(table="to_repack", connection=connection)
-        repack = Repack(
+        repack = Psycopack(
             table="to_repack",
             batch_size=1,
             conn=connection,
@@ -939,7 +939,7 @@ def test_revert_swap_before_swap_called(connection: _psycopg.Connection) -> None
             table_name="to_repack",
             rows=100,
         )
-        repack = Repack(
+        repack = Psycopack(
             table="to_repack",
             batch_size=1,
             conn=connection,
@@ -963,7 +963,7 @@ def test_repack_with_exclusion_constraint(connection: _psycopg.Connection) -> No
             with_exclusion_constraint=True,
         )
         table_before = _collect_table_info(table="to_repack", connection=connection)
-        repack = Repack(
+        repack = Psycopack(
             table="to_repack",
             batch_size=1,
             conn=connection,
@@ -996,7 +996,7 @@ def test_repack_with_inherited_table(connection: _psycopg.Connection) -> None:
         cur.execute("CREATE TABLE child () INHERITS (parent);")
         # Insert a row so that the table passes the TableIsEmpty check.
         cur.execute("INSERT INTO child (id) SELECT generate_series(1, 1);")
-        repack = Repack(
+        repack = Psycopack(
             table="child",
             batch_size=1,
             conn=connection,
@@ -1027,7 +1027,7 @@ def test_repack_when_table_has_triggers(connection: _psycopg.Connection) -> None
             FOR EACH ROW
             EXECUTE FUNCTION log_insert();
         """)
-        repack = Repack(
+        repack = Psycopack(
             table="table_with_triggers",
             batch_size=1,
             conn=connection,
@@ -1042,7 +1042,7 @@ def test_table_without_pk(connection: _psycopg.Connection) -> None:
         cur.execute("CREATE TABLE table_without_fk (id integer);")
         # Insert a row so that the table passes the TableIsEmpty check.
         cur.execute("INSERT INTO table_without_fk (id) VALUES (42)")
-        repack = Repack(
+        repack = Psycopack(
             table="table_without_fk",
             batch_size=1,
             conn=connection,
@@ -1057,7 +1057,7 @@ def test_table_without_supported_pk_type(connection: _psycopg.Connection) -> Non
         cur.execute("CREATE TABLE table_with_var_pk (id varchar PRIMARY KEY);")
         # Insert a row so that the table passes the TableIsEmpty check.
         cur.execute("INSERT INTO table_with_var_pk (id) VALUES ('gday')")
-        repack = Repack(
+        repack = Psycopack(
             table="table_with_var_pk",
             batch_size=1,
             conn=connection,
@@ -1077,7 +1077,7 @@ def test_with_pk_name_different_than_id(connection: _psycopg.Connection) -> None
             pk_name="a_name_that_is_not_id",
         )
         table_before = _collect_table_info(table="to_repack", connection=connection)
-        repack = Repack(
+        repack = Psycopack(
             table="to_repack",
             batch_size=1,
             conn=connection,
@@ -1109,7 +1109,7 @@ def test_table_with_composite_pk(connection: _psycopg.Connection) -> None:
         )
         # Insert a row so that the table passes the TableIsEmpty check.
         cur.execute("INSERT INTO composite_pk (id, id_2) VALUES (1, 'hey');")
-        repack = Repack(
+        repack = Psycopack(
             table="composite_pk",
             batch_size=1,
             conn=connection,
@@ -1127,7 +1127,7 @@ def test_table_with_invalid_primary_key_type_to_enlarge(
         cur.execute(f"CREATE TABLE table_with_big_pk (id {pk_type} PRIMARY KEY);")
         # Insert a row so that the table passes the TableIsEmpty check.
         cur.execute("INSERT INTO table_with_big_pk (id) VALUES (42)")
-        repack = Repack(
+        repack = Psycopack(
             table="table_with_big_pk",
             batch_size=1,
             conn=connection,
@@ -1159,7 +1159,7 @@ def test_with_primary_key_enlargement(
             pk_type=initial_pk_type,
         )
         table_before = _collect_table_info(table="to_repack", connection=connection)
-        repack = Repack(
+        repack = Psycopack(
             table="to_repack",
             batch_size=1,
             conn=connection,
@@ -1217,7 +1217,7 @@ def test_repack_full_with_serial_pk(
             pk_type=pk_type,
         )
         table_before = _collect_table_info(table="to_repack", connection=connection)
-        repack = Repack(
+        repack = Psycopack(
             table="to_repack",
             batch_size=1,
             conn=connection,
@@ -1294,7 +1294,7 @@ def test_when_table_has_large_value_being_inserted(
         """
         )
         table_before = _collect_table_info(table="to_repack", connection=connection)
-        repack = Repack(
+        repack = Psycopack(
             table="to_repack",
             conn=connection,
             cur=cur,
@@ -1325,7 +1325,7 @@ def test_when_table_does_not_have_pk_with_sequence(
             ommit_sequence=True,
         )
         table_before = _collect_table_info(table="to_repack", connection=connection)
-        repack = Repack(
+        repack = Psycopack(
             table="to_repack",
             batch_size=1,
             conn=connection,
@@ -1357,7 +1357,7 @@ def test_when_post_backfill_batch_callback_is_passed(
             rows=100,
         )
         table_before = _collect_table_info(table="to_repack", connection=connection)
-        repack = Repack(
+        repack = Psycopack(
             table="to_repack",
             batch_size=25,
             conn=connection,
@@ -1398,7 +1398,7 @@ def test_repeat_stage_when_lock_timeout(connection: _psycopg.Connection) -> None
             rows=100,
         )
         table_before = _collect_table_info(table="to_repack", connection=connection)
-        repack = Repack(
+        repack = Psycopack(
             table="to_repack",
             batch_size=1,
             conn=connection,
@@ -1496,7 +1496,7 @@ def test_reset(connection: _psycopg.Connection) -> None:
             rows=100,
         )
         table_before = _collect_table_info(table="to_repack", connection=connection)
-        repack = Repack(
+        repack = Psycopack(
             table="to_repack",
             batch_size=1,
             conn=connection,
@@ -1572,7 +1572,7 @@ def test_when_invalid_indexes(connection: _psycopg.Connection) -> None:
             table_name="to_repack",
             rows=100,
         )
-        repack = Repack(
+        repack = Psycopack(
             table="to_repack",
             batch_size=1,
             conn=connection,
@@ -1608,7 +1608,7 @@ def test_with_non_default_schema(connection: _psycopg.Connection) -> None:
             connection=connection,
             schema=schema,
         )
-        repack = Repack(
+        repack = Psycopack(
             table="to_repack",
             batch_size=1,
             conn=connection,
@@ -1646,7 +1646,7 @@ def test_with_fks_from_another_schema(connection: _psycopg.Connection) -> None:
             rows=10,
             pk_type="integer",
         )
-        repack = Repack(
+        repack = Psycopack(
             table="to_repack",
             batch_size=1,
             conn=connection,
@@ -1693,7 +1693,7 @@ def test_without_schema_privileges(connection: _psycopg.Connection) -> None:
             NoCreateAndUsagePrivilegeOnSchema,
             match="GRANT CREATE, USAGE ON SCHEMA sweet_schema TO sweet_user;",
         ):
-            Repack(
+            Psycopack(
                 table="to_repack",
                 batch_size=1,
                 conn=connection,
@@ -1708,7 +1708,7 @@ def test_without_schema_privileges(connection: _psycopg.Connection) -> None:
             NoCreateAndUsagePrivilegeOnSchema,
             match="GRANT CREATE, USAGE ON SCHEMA sweet_schema TO sweet_user;",
         ):
-            Repack(
+            Psycopack(
                 table="to_repack",
                 batch_size=1,
                 conn=connection,
@@ -1724,7 +1724,7 @@ def test_without_schema_privileges(connection: _psycopg.Connection) -> None:
             NoCreateAndUsagePrivilegeOnSchema,
             match="GRANT CREATE, USAGE ON SCHEMA sweet_schema TO sweet_user;",
         ):
-            Repack(
+            Psycopack(
                 table="to_repack",
                 batch_size=1,
                 conn=connection,
@@ -1755,7 +1755,7 @@ def test_user_without_table_ownership(
             NotTableOwner,
             match="ALTER TABLE sweet_schema.to_repack OWNER TO sweet_user;",
         ):
-            Repack(
+            Psycopack(
                 table="to_repack",
                 batch_size=1,
                 conn=connection,
@@ -1787,7 +1787,7 @@ def test_user_without_referring_table_ownership(
             NoReferringTableOwnership,
             match="ALTER TABLE sweet_schema.referring_table OWNER TO sweet_user;",
         ):
-            Repack(
+            Psycopack(
                 table="to_repack",
                 batch_size=1,
                 conn=connection,
@@ -1823,7 +1823,7 @@ def test_user_without_referred_table_references_privilege(
             NoReferencesPrivilege,
             match="GRANT REFERENCES ON TABLE sweet_schema.referred_table TO sweet_user;",
         ):
-            Repack(
+            Psycopack(
                 table="to_repack",
                 batch_size=1,
                 conn=connection,
@@ -1864,7 +1864,7 @@ def test_user_with_bare_minimum_permissions(connection: _psycopg.Connection) -> 
             "GRANT REFERENCES ON TABLE sweet_schema.not_valid_referred_table TO sweet_user;"
         )
         cur.execute("SET ROLE sweet_user;")
-        repack = Repack(
+        repack = Psycopack(
             table="to_repack",
             batch_size=1,
             conn=connection,
@@ -1893,8 +1893,8 @@ def test_when_repack_is_reinstantiated_after_swapping(
 
     - The user runs the swap() command.
     - Now the copy table has been swapped with the original.
-    - Their script crashes and they have to re-instantiate the Repack class.
-    - The new Repack instance thinks that the recently-swapped class is the
+    - Their script crashes and they have to re-instantiate the Psycopack class.
+    - The new Psycopack instance thinks that the recently-swapped class is the
       original.
     - The instance can't find any existing Psycopack objects, because they are
       all named after the OID of the original table.
@@ -1911,7 +1911,7 @@ def test_when_repack_is_reinstantiated_after_swapping(
             table_name="to_repack",
         )
         table_before = _collect_table_info(table="to_repack", connection=connection)
-        repack = Repack(
+        repack = Psycopack(
             table="to_repack",
             batch_size=1,
             conn=connection,
@@ -1924,7 +1924,7 @@ def test_when_repack_is_reinstantiated_after_swapping(
         repack.swap()
 
         # Re-instantiate to trigger the edge-case
-        new_repack = Repack(
+        new_repack = Psycopack(
             table="to_repack",
             batch_size=1,
             conn=connection,

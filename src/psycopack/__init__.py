@@ -5,7 +5,7 @@ A customizable way to repack a table using psycopg.
 from ._conn import get_db_connection
 from ._introspect import BackfillBatch
 from ._repack import (
-    BaseRepackError,
+    BasePsycopackError,
     CompositePrimaryKey,
     InheritedTable,
     InvalidIndexes,
@@ -16,8 +16,8 @@ from ._repack import (
     NoReferringTableOwnership,
     NotTableOwner,
     PrimaryKeyNotFound,
+    Psycopack,
     ReferringForeignKeyInDifferentSchema,
-    Repack,
     TableDoesNotExist,
     TableHasTriggers,
     TableIsEmpty,
@@ -28,7 +28,7 @@ from ._tracker import FailureDueToLockTimeout
 
 __all__ = (
     "BackfillBatch",
-    "BaseRepackError",
+    "BasePsycopackError",
     "CompositePrimaryKey",
     "FailureDueToLockTimeout",
     "InheritedTable",
@@ -41,7 +41,7 @@ __all__ = (
     "NotTableOwner",
     "PrimaryKeyNotFound",
     "ReferringForeignKeyInDifferentSchema",
-    "Repack",
+    "Psycopack",
     "TableDoesNotExist",
     "TableHasTriggers",
     "TableIsEmpty",

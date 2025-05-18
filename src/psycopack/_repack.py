@@ -11,67 +11,67 @@ from . import _commands, _cur, _identifiers, _introspect, _registry, _tracker
 from . import _psycopg as psycopg
 
 
-class BaseRepackError(Exception):
+class BasePsycopackError(Exception):
     pass
 
 
-class TableDoesNotExist(BaseRepackError):
+class TableDoesNotExist(BasePsycopackError):
     pass
 
 
-class TableIsEmpty(BaseRepackError):
+class TableIsEmpty(BasePsycopackError):
     pass
 
 
-class InheritedTable(BaseRepackError):
+class InheritedTable(BasePsycopackError):
     pass
 
 
-class TableHasTriggers(BaseRepackError):
+class TableHasTriggers(BasePsycopackError):
     pass
 
 
-class PrimaryKeyNotFound(BaseRepackError):
+class PrimaryKeyNotFound(BasePsycopackError):
     pass
 
 
-class CompositePrimaryKey(BaseRepackError):
+class CompositePrimaryKey(BasePsycopackError):
     pass
 
 
-class UnsupportedPrimaryKey(BaseRepackError):
+class UnsupportedPrimaryKey(BasePsycopackError):
     pass
 
 
-class InvalidPrimaryKeyTypeForConversion(BaseRepackError):
+class InvalidPrimaryKeyTypeForConversion(BasePsycopackError):
     pass
 
 
-class InvalidStageForReset(BaseRepackError):
+class InvalidStageForReset(BasePsycopackError):
     pass
 
 
-class InvalidIndexes(BaseRepackError):
+class InvalidIndexes(BasePsycopackError):
     pass
 
 
-class ReferringForeignKeyInDifferentSchema(BaseRepackError):
+class ReferringForeignKeyInDifferentSchema(BasePsycopackError):
     pass
 
 
-class NoCreateAndUsagePrivilegeOnSchema(BaseRepackError):
+class NoCreateAndUsagePrivilegeOnSchema(BasePsycopackError):
     pass
 
 
-class NotTableOwner(BaseRepackError):
+class NotTableOwner(BasePsycopackError):
     pass
 
 
-class NoReferringTableOwnership(BaseRepackError):
+class NoReferringTableOwnership(BasePsycopackError):
     pass
 
 
-class NoReferencesPrivilege(BaseRepackError):
+class NoReferencesPrivilege(BasePsycopackError):
     pass
 
 
@@ -81,20 +81,21 @@ class PostBackfillBatchCallback(typing.Protocol):
     ) -> None: ...  # pragma: no cover
 
 
-class Repack:
+class Psycopack:
     """
-    Class for operating a full table repack.
+    Class for operating a full table copy-and-swap (Psycopack) process.
 
     This class can be used in two different ways:
 
-    - Calling Repack(...).full(): This will operate a repack from beginning to
-      end without any intervention. This is a good choice if all you want is to
-      repack a table.
+    - Calling Psycopack(...).full(): This will operate a repack from beginning
+      to end without any intervention. This is a good choice if all you want is
+      to repack a table.
 
     - Calling each of the public functions individually to pace-out or
       customise the repacking process. The public functions are:
 
-        1. pre_validate(): Checks if the table can be repacked at all.
+        1. pre_validate(): Checks if the table can be processed by Psycopack at
+           all.
         2. setup_repacking(): Create the copy function, trigger, table, and
            also setup the backfill log table. The backfill log table controls
            the backfilling process. If you want to customise the layout of
@@ -172,7 +173,7 @@ class Repack:
         self.function = registry_row.function
         self.trigger = registry_row.trigger
         self.backfill_log = registry_row.backfill_log
-        # Names after the original table once it has been repacked and swapped.
+        # Names after the original table once it has been swapped.
         self.repacked_name = registry_row.repacked_name
         self.repacked_function = registry_row.repacked_function
         self.repacked_trigger = registry_row.repacked_trigger
