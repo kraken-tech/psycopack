@@ -128,14 +128,14 @@ class Psycopack:
         table: str,
         batch_size: int,
         conn: psycopg.Connection,
-        cur: psycopg.Cursor,
+        cur: _cur.LoggedCursor,
         convert_pk_to_bigint: bool = False,
         post_backfill_batch_callback: PostBackfillBatchCallback | None = None,
         lock_timeout: datetime.timedelta = datetime.timedelta(seconds=10),
         schema: str = "public",
     ) -> None:
         self.conn = conn
-        self.cur = _cur.LoggedCursor(cur=cur)
+        self.cur = cur
         self.introspector = _introspect.Introspector(
             conn=self.conn,
             cur=self.cur,

@@ -46,10 +46,10 @@ def _collect_table_info(
     connection: _psycopg.Connection,
     schema: str = "public",
 ) -> _TableInfo:
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         introspector = _introspect.Introspector(
             conn=connection,
-            cur=_cur.LoggedCursor(cur=cur),
+            cur=cur,
             schema=schema,
         )
         oid = introspector.get_table_oid(table=table)
@@ -76,7 +76,7 @@ class _TriggerInfo:
     repacked_trigger_exists: bool
 
 
-def _get_trigger_info(repack: Psycopack, cur: _psycopg.Cursor) -> _TriggerInfo:
+def _get_trigger_info(repack: Psycopack, cur: _cur.LoggedCursor) -> _TriggerInfo:
     cur.execute(f"SELECT 1 FROM pg_trigger WHERE tgname = '{repack.trigger}'")
     trigger_exists = cur.fetchone() is not None
     cur.execute(f"SELECT 1 FROM pg_trigger WHERE tgname = '{repack.repacked_trigger}'")
@@ -92,7 +92,7 @@ class _FunctionInfo:
     repacked_function_exists: bool
 
 
-def _get_function_info(repack: Psycopack, cur: _psycopg.Cursor) -> _FunctionInfo:
+def _get_function_info(repack: Psycopack, cur: _cur.LoggedCursor) -> _FunctionInfo:
     cur.execute(f"SELECT 1 FROM pg_proc WHERE proname = '{repack.function}'")
     function_exists = cur.fetchone() is not None
     cur.execute(f"SELECT 1 FROM pg_proc WHERE proname = '{repack.repacked_function}'")
@@ -108,7 +108,7 @@ class _SequenceInfo:
     sequence_exists: bool
 
 
-def _get_sequence_info(repack: Psycopack, cur: _psycopg.Cursor) -> _SequenceInfo:
+def _get_sequence_info(repack: Psycopack, cur: _cur.LoggedCursor) -> _SequenceInfo:
     cur.execute(f"SELECT 1 FROM pg_sequences WHERE sequencename = '{repack.id_seq}'")
     sequence_exists = cur.fetchone() is not None
     return _SequenceInfo(sequence_exists=sequence_exists)
@@ -118,7 +118,7 @@ def _assert_repack(
     table_before: _TableInfo,
     table_after: _TableInfo,
     repack: Psycopack,
-    cur: _psycopg.Cursor,
+    cur: _cur.LoggedCursor,
 ) -> None:
     # They aren't the same tables (thus different oids), but everything else is
     # the same.
@@ -147,7 +147,7 @@ def _assert_repack(
     assert cur.fetchone() is None
 
 
-def _assert_reset(repack: Psycopack, cur: _psycopg.Cursor) -> None:
+def _assert_reset(repack: Psycopack, cur: _cur.LoggedCursor) -> None:
     assert _get_trigger_info(repack, cur).trigger_exists is False
     assert _get_function_info(repack, cur).function_exists is False
     assert _get_sequence_info(repack, cur).sequence_exists is False
@@ -160,7 +160,7 @@ def _assert_reset(repack: Psycopack, cur: _psycopg.Cursor) -> None:
     ("bigint", "bigserial", "integer", "serial", "smallint", "smallserial"),
 )
 def test_repack_full(connection: _psycopg.Connection, pk_type: str) -> None:
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         factories.create_table_for_repacking(
             connection=connection,
             cur=cur,
@@ -201,7 +201,7 @@ def test_repack_full_with_identity_pk(
     convert_pk_to_bigint: bool,
     expected_seq_max_val: int,
 ) -> None:
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         factories.create_table_for_repacking(
             connection=connection,
             cur=cur,
@@ -244,7 +244,7 @@ def test_repack_full_with_identity_pk(
 
 
 def test_when_table_does_not_exist(connection: _psycopg.Connection) -> None:
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         with pytest.raises(TableDoesNotExist):
             Psycopack(
                 table="to_repack",
@@ -255,7 +255,7 @@ def test_when_table_does_not_exist(connection: _psycopg.Connection) -> None:
 
 
 def test_when_table_is_empty(connection: _psycopg.Connection) -> None:
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         cur.execute("CREATE TABLE empty_table (id SERIAL PRIMARY KEY);")
 
         with pytest.raises(TableIsEmpty):
@@ -274,7 +274,7 @@ def test_repack_full_after_pre_validate_called(connection: _psycopg.Connection) 
 
     In this case, it will just proceed from the pre_validation step.
     """
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         factories.create_table_for_repacking(
             connection=connection,
             cur=cur,
@@ -307,7 +307,7 @@ def test_repack_full_after_setup_called(connection: _psycopg.Connection) -> None
     In this case, it will remove the copy table, function, and trigger that
     already exist due to the setup_repacking() method being called beforehand.
     """
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         factories.create_table_for_repacking(
             connection=connection,
             cur=cur,
@@ -343,7 +343,7 @@ def test_repack_full_after_backfill(connection: _psycopg.Connection) -> None:
     In this case, it will drop the backfill log table and all related tables
     to repack and repack again from scratch.
     """
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         factories.create_table_for_repacking(
             connection=connection,
             cur=cur,
@@ -380,7 +380,7 @@ def test_repack_full_after_sync_schemas_called(connection: _psycopg.Connection) 
     In this case, it will remove the foreign keys from referring tables that
     were created by the setup_repacking() method.
     """
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         factories.create_table_for_repacking(
             connection=connection,
             cur=cur,
@@ -419,7 +419,7 @@ def test_repack_full_after_swap_called(connection: _psycopg.Connection) -> None:
     table for the original and creates a new trigger to keep the original table
     updated with new inserts into the copy.
     """
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         factories.create_table_for_repacking(
             connection=connection,
             cur=cur,
@@ -455,7 +455,7 @@ def test_clean_up_finishes_the_repacking(connection: _psycopg.Connection) -> Non
     The last step on the full() method is to perform a clean_up(). That means
     that the repacking should be finished up as soon as clean_up() returns.
     """
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         factories.create_table_for_repacking(
             connection=connection,
             cur=cur,
@@ -487,7 +487,7 @@ def test_clean_up_finishes_the_repacking(connection: _psycopg.Connection) -> Non
 def test_sync_schemas_is_reentrant_and_idempotent(
     connection: _psycopg.Connection,
 ) -> None:
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         factories.create_table_for_repacking(
             connection=connection,
             cur=cur,
@@ -589,7 +589,7 @@ def test_sync_schemas_is_reentrant_and_idempotent(
 def test_when_tracker_removed_after_sync_schemas(
     connection: _psycopg.Connection,
 ) -> None:
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         factories.create_table_for_repacking(
             connection=connection,
             cur=cur,
@@ -635,7 +635,7 @@ def test_when_tracker_table_current_row_is_deleted(
     In this case, the row containing the current stage has been deleted
     manually.
     """
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         factories.create_table_for_repacking(
             connection=connection,
             cur=cur,
@@ -670,7 +670,7 @@ def test_when_rogue_row_inserted_in_tracker_table(
     In this case, a new row that shouldn't be there has been inserted into the
     table manually.
     """
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         factories.create_table_for_repacking(
             connection=connection,
             cur=cur,
@@ -711,7 +711,7 @@ def test_when_rogue_row_inserted_in_tracker_table(
 def test_table_to_repack_deleted_after_pre_validation(
     connection: _psycopg.Connection,
 ) -> None:
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         factories.create_table_for_repacking(
             connection=connection,
             cur=cur,
@@ -734,7 +734,7 @@ def test_table_to_repack_deleted_after_pre_validation(
 
 
 def test_trigger_deleted_after_setup(connection: _psycopg.Connection) -> None:
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         factories.create_table_for_repacking(
             connection=connection,
             cur=cur,
@@ -759,7 +759,7 @@ def test_trigger_deleted_after_setup(connection: _psycopg.Connection) -> None:
 
 
 def test_cannot_repeat_finished_stage(connection: _psycopg.Connection) -> None:
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         factories.create_table_for_repacking(
             connection=connection,
             cur=cur,
@@ -811,7 +811,7 @@ def test_cannot_repeat_finished_stage(connection: _psycopg.Connection) -> None:
 
 
 def test_cannot_skip_order_of_stages(connection: _psycopg.Connection) -> None:
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         factories.create_table_for_repacking(
             connection=connection,
             cur=cur,
@@ -875,7 +875,7 @@ def test_revert_swap_after_swap_called(
     This routine should leave the repacking status exactly the same way it was
     before swap() was called.
     """
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         factories.create_table_for_repacking(
             connection=connection,
             cur=cur,
@@ -932,7 +932,7 @@ def test_revert_swap_before_swap_called(connection: _psycopg.Connection) -> None
     This test tries to call revert_swap() _before_ swap() has been called,
     which is wrong.
     """
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         factories.create_table_for_repacking(
             connection=connection,
             cur=cur,
@@ -954,7 +954,7 @@ def test_revert_swap_before_swap_called(connection: _psycopg.Connection) -> None
 
 
 def test_repack_with_exclusion_constraint(connection: _psycopg.Connection) -> None:
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         factories.create_table_for_repacking(
             connection=connection,
             cur=cur,
@@ -991,7 +991,7 @@ def test_repack_with_exclusion_constraint(connection: _psycopg.Connection) -> No
 
 
 def test_repack_with_inherited_table(connection: _psycopg.Connection) -> None:
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         cur.execute("CREATE TABLE parent (id SERIAL PRIMARY KEY);")
         cur.execute("CREATE TABLE child () INHERITS (parent);")
         # Insert a row so that the table passes the TableIsEmpty check.
@@ -1007,7 +1007,7 @@ def test_repack_with_inherited_table(connection: _psycopg.Connection) -> None:
 
 
 def test_repack_when_table_has_triggers(connection: _psycopg.Connection) -> None:
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         cur.execute("CREATE TABLE table_with_triggers (id SERIAL PRIMARY KEY);")
         # Insert a row so that the table passes the TableIsEmpty check.
         cur.execute(
@@ -1038,7 +1038,7 @@ def test_repack_when_table_has_triggers(connection: _psycopg.Connection) -> None
 
 
 def test_table_without_pk(connection: _psycopg.Connection) -> None:
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         cur.execute("CREATE TABLE table_without_fk (id integer);")
         # Insert a row so that the table passes the TableIsEmpty check.
         cur.execute("INSERT INTO table_without_fk (id) VALUES (42)")
@@ -1053,7 +1053,7 @@ def test_table_without_pk(connection: _psycopg.Connection) -> None:
 
 
 def test_table_without_supported_pk_type(connection: _psycopg.Connection) -> None:
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         cur.execute("CREATE TABLE table_with_var_pk (id varchar PRIMARY KEY);")
         # Insert a row so that the table passes the TableIsEmpty check.
         cur.execute("INSERT INTO table_with_var_pk (id) VALUES ('gday')")
@@ -1068,7 +1068,7 @@ def test_table_without_supported_pk_type(connection: _psycopg.Connection) -> Non
 
 
 def test_with_pk_name_different_than_id(connection: _psycopg.Connection) -> None:
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         factories.create_table_for_repacking(
             connection=connection,
             cur=cur,
@@ -1094,7 +1094,7 @@ def test_with_pk_name_different_than_id(connection: _psycopg.Connection) -> None
 
 
 def test_table_with_composite_pk(connection: _psycopg.Connection) -> None:
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         cur.execute(
             # The first column is called "id" on purpose, even though it is not
             # the single column in the PK definition. This is to guarantee the
@@ -1123,7 +1123,7 @@ def test_table_with_composite_pk(connection: _psycopg.Connection) -> None:
 def test_table_with_invalid_primary_key_type_to_enlarge(
     connection: _psycopg.Connection, pk_type: str
 ) -> None:
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         cur.execute(f"CREATE TABLE table_with_big_pk (id {pk_type} PRIMARY KEY);")
         # Insert a row so that the table passes the TableIsEmpty check.
         cur.execute("INSERT INTO table_with_big_pk (id) VALUES (42)")
@@ -1150,7 +1150,7 @@ def test_table_with_invalid_primary_key_type_to_enlarge(
 def test_with_primary_key_enlargement(
     connection: _psycopg.Connection, initial_pk_type: str
 ) -> None:
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         factories.create_table_for_repacking(
             connection=connection,
             cur=cur,
@@ -1208,7 +1208,7 @@ def test_repack_full_with_serial_pk(
     expected_seq_max_val: int,
     expected_pk_type: str,
 ) -> None:
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         factories.create_table_for_repacking(
             connection=connection,
             cur=cur,
@@ -1237,7 +1237,7 @@ def test_repack_full_with_serial_pk(
 def test_when_table_has_large_value_being_inserted(
     connection: _psycopg.Connection,
 ) -> None:
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         factories.create_table_for_repacking(
             connection=connection,
             cur=cur,
@@ -1315,7 +1315,7 @@ def test_when_table_has_large_value_being_inserted(
 def test_when_table_does_not_have_pk_with_sequence(
     connection: _psycopg.Connection,
 ) -> None:
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         factories.create_table_for_repacking(
             connection=connection,
             cur=cur,
@@ -1349,7 +1349,7 @@ def test_when_post_backfill_batch_callback_is_passed(
     def my_sweet_callback(batch: BackfillBatch) -> None:
         batches.append(batch)
 
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         factories.create_table_for_repacking(
             connection=connection,
             cur=cur,
@@ -1383,7 +1383,7 @@ def test_when_post_backfill_batch_callback_is_passed(
 
 
 def test_repeat_stage_when_lock_timeout(connection: _psycopg.Connection) -> None:
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         if not _psycopg.PSYCOPG_3:  # pragma: no cover
             # https://github.com/psycopg/psycopg2/issues/941#issuecomment-864025101
             # https://github.com/psycopg/psycopg2/issues/1305#issuecomment-866712961
@@ -1488,7 +1488,7 @@ def test_repeat_stage_when_lock_timeout(connection: _psycopg.Connection) -> None
 
 
 def test_reset(connection: _psycopg.Connection) -> None:
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         factories.create_table_for_repacking(
             connection=connection,
             cur=cur,
@@ -1565,7 +1565,7 @@ def test_reset(connection: _psycopg.Connection) -> None:
 
 
 def test_when_invalid_indexes(connection: _psycopg.Connection) -> None:
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         factories.create_table_for_repacking(
             connection=connection,
             cur=cur,
@@ -1593,7 +1593,7 @@ def test_when_invalid_indexes(connection: _psycopg.Connection) -> None:
 
 def test_with_non_default_schema(connection: _psycopg.Connection) -> None:
     schema = "sweet_schema"
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         cur.execute(f"CREATE SCHEMA {schema};")
         factories.create_table_for_repacking(
             connection=connection,
@@ -1638,7 +1638,7 @@ def test_with_non_default_schema(connection: _psycopg.Connection) -> None:
 
 
 def test_with_fks_from_another_schema(connection: _psycopg.Connection) -> None:
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         factories.create_table_for_repacking(
             connection=connection,
             cur=cur,
@@ -1669,7 +1669,7 @@ def test_with_fks_from_another_schema(connection: _psycopg.Connection) -> None:
 
 def test_without_schema_privileges(connection: _psycopg.Connection) -> None:
     schema = "sweet_schema"
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         cur.execute("SELECT current_user;")
         result = cur.fetchone()
         assert result is not None
@@ -1737,7 +1737,7 @@ def test_user_without_table_ownership(
     connection: _psycopg.Connection,
 ) -> None:
     schema = "sweet_schema"
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         cur.execute(f"CREATE SCHEMA {schema};")
         cur.execute(f"REVOKE CREATE ON SCHEMA {schema} FROM PUBLIC;")
         factories.create_table_for_repacking(
@@ -1768,7 +1768,7 @@ def test_user_without_referring_table_ownership(
     connection: _psycopg.Connection,
 ) -> None:
     schema = "sweet_schema"
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         cur.execute(f"CREATE SCHEMA {schema};")
         cur.execute(f"REVOKE CREATE ON SCHEMA {schema} FROM PUBLIC;")
         factories.create_table_for_repacking(
@@ -1800,7 +1800,7 @@ def test_user_without_referred_table_references_privilege(
     connection: _psycopg.Connection,
 ) -> None:
     schema = "sweet_schema"
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         cur.execute(f"CREATE SCHEMA {schema};")
         cur.execute(f"REVOKE CREATE ON SCHEMA {schema} FROM PUBLIC;")
         factories.create_table_for_repacking(
@@ -1834,7 +1834,7 @@ def test_user_without_referred_table_references_privilege(
 
 def test_user_with_bare_minimum_permissions(connection: _psycopg.Connection) -> None:
     schema = "sweet_schema"
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         cur.execute(f"CREATE SCHEMA {schema};")
         cur.execute(f"REVOKE CREATE ON SCHEMA {schema} FROM PUBLIC;")
         factories.create_table_for_repacking(
@@ -1904,7 +1904,7 @@ def test_when_repack_is_reinstantiated_after_swapping(
     The Psycopack process should pick up where it left, no matter if the user
     has re-instantiated the class after the swap or not.
     """
-    with connection.cursor() as cur:
+    with _cur.get_cursor(connection) as cur:
         factories.create_table_for_repacking(
             connection=connection,
             cur=cur,

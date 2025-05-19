@@ -1,11 +1,11 @@
 from textwrap import dedent
 
-from psycopack import _psycopg
+from psycopack import _cur, _psycopg
 
 
 def create_table_for_repacking(
     connection: _psycopg.Connection,
-    cur: _psycopg.Cursor,
+    cur: _cur.LoggedCursor,
     table_name: str = "to_repack",
     rows: int = 100,
     referred_table_rows: int = 10,
