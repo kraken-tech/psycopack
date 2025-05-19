@@ -32,11 +32,11 @@ class StageAlreadyFinished(TrackerException):
     pass
 
 
-class InvalidRepackingSetup(TrackerException):
+class InvalidPsycopackSetup(TrackerException):
     pass
 
 
-class InvalidRepackingStep(TrackerException):
+class InvalidPsycopackStep(TrackerException):
     pass
 
 
@@ -65,14 +65,14 @@ class Stage(enum.Enum):
 
 class Tracker:
     """
-    A class to keep track of where in the repacking process a table is.
+    A class to keep track of where in the Psycopack process a table is.
 
     It should be used via the two public methods:
 
       1. `track` (context manager): used to verify if a stage pre-condition
          is valid, and to log the stage completion once it has exited.
 
-      2. `get_current_stage`: used to verify which stage the repacking process
+      2. `get_current_stage`: used to verify which stage the Psycopack process
          is currently at.
     """
 
@@ -134,9 +134,9 @@ class Tracker:
             return
 
         if stage and (stage != self.initial_stage):
-            raise InvalidRepackingSetup(
-                f"The repacking process should be initiated by the "
-                f"{self.initial_stage} stage. Tried to start repacking with "
+            raise InvalidPsycopackSetup(
+                f"The Psycopack process should be initiated by the "
+                f"{self.initial_stage} stage. Tried to start Psycopack with "
                 f"{stage} instead."
             )
 
@@ -158,7 +158,7 @@ class Tracker:
     def _validate_stage_in_right_sequence(self, *, stage: Stage) -> None:
         unfinished_stage = self._get_unfinished_stage()
         if stage != unfinished_stage:
-            raise InvalidRepackingStep(
+            raise InvalidPsycopackStep(
                 f"Cannot run {stage} if the current stage is {unfinished_stage}."
             )
 
@@ -209,8 +209,8 @@ class Tracker:
                 self._set_stage(stage_from=stage, stage_to=Stage.CLEAN_UP)
                 return
             case Stage.CLEAN_UP:
-                # Repacking is done. We have to drop the tracker table as well
-                # to not leave any repacking relations behind.
+                # Psycopack is done. We have to drop the tracker table as well
+                # to not leave any Psycopack relations behind.
                 self.command.drop_table_if_exists(table=self.tracker_table)
                 return
             case _:  # pragma: no cover
@@ -253,7 +253,7 @@ class Tracker:
         )
         # The unique index below will guarantee that there is ever only one row
         # in the table with finished_at NULL. This represents the logical
-        # constraint of not being possible to carry on two repacking stages at
+        # constraint of not being possible to carry on two Psycopack stages at
         # the same time.
         # Due to the limitations of having to support lower versions than
         # Postgres 15, we can't use NULLS NOT DISTINCT and need the workaround
@@ -421,7 +421,7 @@ class Tracker:
             current_stage = self.get_current_stage()
             if current_stage != Stage.CLEAN_UP:
                 raise CannotRevertSwap(
-                    "Can only revert if a swap was the last completed repacking stage."
+                    "Can only revert if a swap was the last completed Psycopack stage."
                 )
 
             self._delete_current_stage()

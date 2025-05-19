@@ -128,7 +128,8 @@ class Registry:
             psycopg.sql.SQL(
                 # - The maximum length for a Postgres identifier is 63.
                 # - All names must be unique. Else, having the same name for
-                #   two different tables being repacked would be ambiguous.
+                #   two different tables being processed by Psycopack would be
+                #   ambiguous.
                 dedent("""
                 CREATE TABLE {schema}.{registry_table} (
                   original_table VARCHAR(63) NOT NULL UNIQUE,
