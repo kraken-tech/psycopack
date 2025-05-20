@@ -3,6 +3,7 @@ A customizable way to repack a table using psycopg.
 """
 
 from ._conn import get_db_connection
+from ._cur import get_cursor
 from ._introspect import BackfillBatch
 from ._repack import (
     BasePsycopackError,
@@ -46,5 +47,6 @@ __all__ = (
     "TableHasTriggers",
     "TableIsEmpty",
     "UnsupportedPrimaryKey",
+    "get_cursor",
     "get_db_connection",
 )
