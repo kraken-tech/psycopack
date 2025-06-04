@@ -444,7 +444,7 @@ class Command:
     ) -> None:
         identity_type = "ALWAYS" if always else "BY DEFAULT"
         self.cur.execute(
-            sql=psycopg.sql.SQL(
+            psycopg.sql.SQL(
                 dedent("""
                 ALTER TABLE {schema}.{table}
                 ALTER COLUMN {pk_column}
