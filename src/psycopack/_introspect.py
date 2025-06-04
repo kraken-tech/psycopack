@@ -122,7 +122,9 @@ class Introspector:
         )
         return [r[0] for r in self.cur.fetchall()]
 
-    def get_min_and_max_pk(self, *, table: str, pk_column: str) -> tuple[int, int]:
+    def get_min_and_max_pk(
+        self, *, table: str, pk_column: str
+    ) -> tuple[int, int] | None:
         self.cur.execute(
             psycopg.sql.SQL(
                 dedent("""
@@ -141,6 +143,9 @@ class Introspector:
         )
         result = self.cur.fetchone()
         assert result is not None
+        if result == (None, None):
+            # table is empty
+            return None
         min_pk, max_pk = result
         assert isinstance(min_pk, int)
         assert isinstance(max_pk, int)
