@@ -14,3 +14,11 @@ dist/
 
 # Testing
 .pytest_cache/
+
+# IDEs
+.idea
+.vscode
+.fleet
+*.code-workspace
+.vscode-settings.json
+
