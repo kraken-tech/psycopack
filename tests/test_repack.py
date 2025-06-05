@@ -267,6 +267,22 @@ def test_when_table_is_empty(connection: _psycopg.Connection) -> None:
             ).full()
 
 
+def test_when_table_is_empty_with_allow_empty(
+    connection: _psycopg.Connection,
+) -> None:
+    with _cur.get_cursor(connection) as cur:
+        cur.execute("CREATE TABLE empty_table (id SERIAL PRIMARY KEY);")
+
+        # doesn't raise TableIsEmpty
+        Psycopack(
+            table="empty_table",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+            allow_empty=True,
+        ).full()
+
+
 def test_repack_full_after_pre_validate_called(connection: _psycopg.Connection) -> None:
     """
     full() should be able to be called no matter where the repacking process

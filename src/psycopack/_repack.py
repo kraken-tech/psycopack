@@ -133,6 +133,7 @@ class Psycopack:
         post_backfill_batch_callback: PostBackfillBatchCallback | None = None,
         lock_timeout: datetime.timedelta = datetime.timedelta(seconds=10),
         schema: str = "public",
+        allow_empty: bool = False,
     ) -> None:
         self.conn = conn
         self.cur = cur
@@ -157,6 +158,7 @@ class Psycopack:
         self.post_backfill_batch_callback = post_backfill_batch_callback
         self.lock_timeout = lock_timeout
         self.convert_pk_to_bigint = convert_pk_to_bigint
+        self.allow_empty = allow_empty
 
         # Names for psycopack objects are stored in the Registry
         self.registry = _registry.Registry(
@@ -247,7 +249,9 @@ class Psycopack:
 
     def pre_validate(self) -> None:
         with self.tracker.track(_tracker.Stage.PRE_VALIDATION):
-            if self.introspector.table_is_empty(table=self.table):
+            if not self.allow_empty and self.introspector.table_is_empty(
+                table=self.table
+            ):
                 raise TableIsEmpty("No reason to repack an empty table.")
 
             if self.introspector.is_inherited_table(table=self.table):
@@ -623,16 +627,18 @@ class Psycopack:
         self.command.create_backfill_log(table=self.backfill_log)
 
     def _populate_backfill_log(self) -> None:
-        min_pk, max_pk = self.introspector.get_min_and_max_pk(
+        min_and_max = self.introspector.get_min_and_max_pk(
             table=self.table,
             pk_column=self.pk_column,
         )
-        self.command.populate_backfill_log(
-            table=self.backfill_log,
-            batch_size=self.batch_size,
-            min_pk=min_pk,
-            max_pk=max_pk,
-        )
+        if min_and_max is not None:
+            min_pk, max_pk = min_and_max
+            self.command.populate_backfill_log(
+                table=self.backfill_log,
+                batch_size=self.batch_size,
+                min_pk=min_pk,
+                max_pk=max_pk,
+            )
 
     def _perform_backfill(self) -> None:
         # TODO: This can be distributed across many workers instead of being
