@@ -12,7 +12,7 @@ class LoggedCursor:
     def __init__(self, *, cur: _psycopg.Cursor) -> None:
         self.cur = cur
 
-    def execute(self, sql: str) -> None:
+    def execute(self, sql: str, /) -> None:
         _logging.logger.debug(sql)
         try:
             self.cur.execute(sql)
