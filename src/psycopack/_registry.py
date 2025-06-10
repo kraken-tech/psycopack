@@ -23,7 +23,7 @@ class Registry:
         self,
         *,
         conn: psycopg.Connection,
-        cur: _cur.LoggedCursor,
+        cur: _cur.Cursor,
         introspector: _introspect.Introspector,
         command: _commands.Command,
         schema: str,

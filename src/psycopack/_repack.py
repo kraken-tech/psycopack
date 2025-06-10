@@ -128,7 +128,7 @@ class Psycopack:
         table: str,
         batch_size: int,
         conn: psycopg.Connection,
-        cur: _cur.LoggedCursor,
+        cur: _cur.Cursor,
         convert_pk_to_bigint: bool = False,
         post_backfill_batch_callback: PostBackfillBatchCallback | None = None,
         lock_timeout: datetime.timedelta = datetime.timedelta(seconds=10),
