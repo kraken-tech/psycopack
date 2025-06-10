@@ -81,7 +81,7 @@ class Tracker:
         *,
         table: str,
         conn: psycopg.Connection,
-        cur: _cur.LoggedCursor,
+        cur: _cur.Cursor,
         copy_table: str,
         trigger: str,
         backfill_log: str,

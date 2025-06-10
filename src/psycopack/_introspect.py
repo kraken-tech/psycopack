@@ -63,7 +63,7 @@ class BackfillBatch:
 
 class Introspector:
     def __init__(
-        self, *, conn: psycopg.Connection, cur: _cur.LoggedCursor, schema: str
+        self, *, conn: psycopg.Connection, cur: _cur.Cursor, schema: str
     ) -> None:
         self.conn = conn
         self.cur = cur
