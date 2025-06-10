@@ -24,7 +24,7 @@ from ._repack import (
     TableIsEmpty,
     UnsupportedPrimaryKey,
 )
-from ._tracker import FailureDueToLockTimeout
+from ._tracker import FailureDueToLockTimeout, Stage
 
 
 __all__ = (
@@ -43,6 +43,7 @@ __all__ = (
     "PrimaryKeyNotFound",
     "ReferringForeignKeyInDifferentSchema",
     "Psycopack",
+    "Stage",
     "TableDoesNotExist",
     "TableHasTriggers",
     "TableIsEmpty",
