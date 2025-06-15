@@ -4,7 +4,7 @@ from contextlib import contextmanager
 from textwrap import dedent
 from typing import Iterator
 
-from . import _cur, _introspect
+from . import _cur, _introspect, _partition
 from . import _psycopg as psycopg
 
 
@@ -16,6 +16,7 @@ class Command:
         cur: _cur.LoggedCursor,
         introspector: _introspect.Introspector,
         schema: str,
+        partition_config: _partition.PartitionConfig | None = None,
     ) -> None:
         self.conn = conn
         self.cur = cur
