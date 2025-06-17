@@ -1989,3 +1989,40 @@ def test_when_repack_is_reinstantiated_after_swapping(
             repack=repack,
             cur=cur,
         )
+
+
+@pytest.mark.parametrize(
+    "positive_rows, negative_rows, expected_ranges",
+    [
+        (100, 0, [(1, 50), (51, 100)]),
+        (0, 100, [(-1000, -951), (-950, -901)]),
+        (100, 100, [(1, 50), (51, 100), (-1000, -951), (-950, -901)]),
+    ],
+)
+def test_populate_backfill_log(
+    connection: _psycopg.Connection,
+    positive_rows: int,
+    negative_rows: int,
+    expected_ranges: list[tuple[int, int]],
+) -> None:
+    with _cur.get_cursor(connection, logged=True) as cur:
+        factories.create_table_for_backfilling(
+            cur=cur,
+            positive_rows=positive_rows,
+            negative_rows=negative_rows,
+        )
+        repack = Psycopack(
+            table="to_backfill",
+            batch_size=50,
+            conn=connection,
+            cur=cur,
+        )
+        repack.pre_validate()
+
+        repack.setup_repacking()  # calls self._populate_backfill_log()
+
+        cur.execute(
+            f"SELECT batch_start, batch_end FROM {repack.backfill_log} ORDER BY id;"
+        )
+        result = cur.fetchall()
+        assert result == expected_ranges

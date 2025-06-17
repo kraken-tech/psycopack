@@ -216,3 +216,34 @@ def create_table_for_repacking(
         SELECT generate_series(1, {referring_table_rows});
     """)
     )
+
+
+def create_table_for_backfilling(
+    cur: _cur.Cursor,
+    table_name: str = "to_backfill",
+    positive_rows: int = 100,
+    negative_rows: int = 100,
+) -> None:
+    cur.execute(
+        dedent(f"""
+            CREATE TABLE {table_name} (
+                id SERIAL PRIMARY KEY
+            );
+        """)
+    )
+
+    if positive_rows > 0:
+        cur.execute(
+            dedent(f"""
+                INSERT INTO {table_name} (id) SELECT generate_series(1, {positive_rows});
+            """)
+        )
+
+    if negative_rows > 0:
+        negative_base = -1000  # arbitrary
+        cur.execute(
+            dedent(f"""
+                INSERT INTO {table_name} (id)
+                SELECT generate_series({negative_base}, {negative_base} + {negative_rows} - 1);
+            """)
+        )
