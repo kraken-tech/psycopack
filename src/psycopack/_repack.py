@@ -353,6 +353,7 @@ class Psycopack:
                 self._create_unique_constraints()
                 self._create_check_and_fk_constraints()
                 self._create_referring_fks()
+                self.command.analyze(table=self.table)
 
     def swap(self) -> None:
         """

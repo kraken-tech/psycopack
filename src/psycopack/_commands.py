@@ -542,6 +542,16 @@ class Command:
             .as_string(self.conn)
         )
 
+    def analyze(self, *, table: str) -> None:
+        self.cur.execute(
+            psycopg.sql.SQL("ANALYZE {schema}.{table};")
+            .format(
+                table=psycopg.sql.Identifier(table),
+                schema=psycopg.sql.Identifier(self.schema),
+            )
+            .as_string(self.conn)
+        )
+
     @contextmanager
     def db_transaction(self) -> Iterator[None]:
         self.cur.execute("BEGIN;")
