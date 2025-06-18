@@ -627,9 +627,26 @@ class Psycopack:
         self.command.create_backfill_log(table=self.backfill_log)
 
     def _populate_backfill_log(self) -> None:
+        # positive pk values
         min_and_max = self.introspector.get_min_and_max_pk(
             table=self.table,
             pk_column=self.pk_column,
+            positive=True,
+        )
+        if min_and_max is not None:
+            min_pk, max_pk = min_and_max
+            self.command.populate_backfill_log(
+                table=self.backfill_log,
+                batch_size=self.batch_size,
+                min_pk=min_pk,
+                max_pk=max_pk,
+            )
+
+        # negative pk values
+        min_and_max = self.introspector.get_min_and_max_pk(
+            table=self.table,
+            pk_column=self.pk_column,
+            positive=False,
         )
         if min_and_max is not None:
             min_pk, max_pk = min_and_max

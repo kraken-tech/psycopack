@@ -123,16 +123,25 @@ class Introspector:
         return [r[0] for r in self.cur.fetchall()]
 
     def get_min_and_max_pk(
-        self, *, table: str, pk_column: str
+        self, *, table: str, pk_column: str, positive: bool
     ) -> tuple[int, int] | None:
+        if positive:
+            # positive range
+            where_sql = "WHERE {pk_column} >= 0;"
+        else:
+            # negative range
+            where_sql = "WHERE {pk_column} < 0;"
         self.cur.execute(
             psycopg.sql.SQL(
-                dedent("""
-                SELECT
-                  MIN({pk_column}) AS min_pk,
-                  MAX({pk_column}) AS max_pk
-                FROM {schema}.{table};
-                """)
+                dedent(
+                    """
+                    SELECT
+                      MIN({pk_column}) AS min_pk,
+                      MAX({pk_column}) AS max_pk
+                    FROM {schema}.{table}
+                    """
+                    + where_sql
+                )
             )
             .format(
                 table=psycopg.sql.Identifier(table),
