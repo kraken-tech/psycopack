@@ -41,6 +41,7 @@ __all__ = (
     "NoReferencesPrivilege",
     "NoReferringTableOwnership",
     "NotTableOwner",
+    "PostBackfillBatchCallback",
     "PrimaryKeyNotFound",
     "ReferringForeignKeyInDifferentSchema",
     "Psycopack",
