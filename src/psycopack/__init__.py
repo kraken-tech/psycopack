@@ -16,6 +16,7 @@ from ._repack import (
     NoReferencesPrivilege,
     NoReferringTableOwnership,
     NotTableOwner,
+    PostBackfillBatchCallback,
     PrimaryKeyNotFound,
     Psycopack,
     ReferringForeignKeyInDifferentSchema,
