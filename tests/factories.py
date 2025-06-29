@@ -26,6 +26,7 @@ def create_table_for_repacking(
         6. Tables that have foreign keys to it (valid and not valid).
         7. Check constraints (valid and not valid).
         8. A column that has the same name as the table.
+        9. A datetime field.
     """
     cur.execute(f"CREATE TABLE {schema}.referred_table (id SERIAL PRIMARY KEY);")
     cur.execute(
@@ -65,7 +66,8 @@ def create_table_for_repacking(
             not_valid_fk INTEGER,
             {table_name} INTEGER,
             var_maybe_with_exclusion VARCHAR(255),
-            var_with_multiple_idx VARCHAR(10)
+            var_with_multiple_idx VARCHAR(10),
+            datetime_field TIMESTAMP
         );
     """)
     )
@@ -159,7 +161,8 @@ def create_table_for_repacking(
             not_valid_fk,
             {table_name},
             var_maybe_with_exclusion,
-            var_with_multiple_idx
+            var_with_multiple_idx,
+            datetime_field
         )
         SELECT
             {"gs," if ommit_sequence else ""}
@@ -176,7 +179,8 @@ def create_table_for_repacking(
             (floor(random() * {referred_table_rows}) + 1)::int,
             (floor(random() * 10) + 1)::int,
             substring(md5(random()::text), 1, 10),
-            substring(md5(random()::text), 1, 10)
+            substring(md5(random()::text), 1, 10),
+            TIMESTAMP '2025-01-01' + (RANDOM() * INTERVAL '365 days')
         FROM generate_series(1, {rows}) AS gs;
     """)
     )

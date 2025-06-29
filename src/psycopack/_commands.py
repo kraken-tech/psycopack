@@ -4,7 +4,7 @@ from contextlib import contextmanager
 from textwrap import dedent
 from typing import Iterator
 
-from . import _cur, _introspect
+from . import _cur, _introspect, _partition
 from . import _psycopg as psycopg
 
 
@@ -16,11 +16,13 @@ class Command:
         cur: _cur.LoggedCursor,
         introspector: _introspect.Introspector,
         schema: str,
+        partition_config: _partition.PartitionConfig | None = None,
     ) -> None:
         self.conn = conn
         self.cur = cur
         self.introspector = introspector
         self.schema = schema
+        self.partition_config = partition_config
 
     def drop_constraint(self, *, table: str, constraint: str) -> None:
         self.cur.execute(
@@ -49,6 +51,16 @@ class Command:
         )
 
     def create_copy_table(self, *, base_table: str, copy_table: str) -> None:
+        if self.partition_config:
+            return self._create_partitioned_table(
+                base_table=base_table, copy_table=copy_table
+            )
+
+        self._create_non_partitioned_table(base_table=base_table, copy_table=copy_table)
+
+    def _create_non_partitioned_table(
+        self, *, base_table: str, copy_table: str
+    ) -> None:
         self.cur.execute(
             psycopg.sql.SQL(
                 dedent("""
@@ -62,6 +74,67 @@ class Command:
                 schema=psycopg.sql.Identifier(self.schema),
             )
             .as_string(self.conn)
+        )
+
+    def _create_partitioned_table(self, *, base_table: str, copy_table: str) -> None:
+        if not isinstance(self.partition_config.strategy, _partition.DateRangeStrategy):
+            raise NotImplementedError
+
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                CREATE TABLE {schema}.{copy_table}
+                (LIKE {schema}.{table} INCLUDING DEFAULTS)
+                PARTITION BY RANGE ({column});
+                """)
+            )
+            .format(
+                table=psycopg.sql.Identifier(base_table),
+                copy_table=psycopg.sql.Identifier(copy_table),
+                schema=psycopg.sql.Identifier(self.schema),
+                column=psycopg.sql.Identifier(self.partition_config.column),
+            )
+            .as_string(self.conn)
+        )
+
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                SELECT
+                  MIN({column}) AS min,
+                  MAX({column}) AS max
+                FROM {schema}.{table};
+                """)
+            )
+            .format(
+                table=psycopg.sql.Identifier(base_table),
+                schema=psycopg.sql.Identifier(self.schema),
+                column=psycopg.sql.Identifier(self.partition_config.column),
+            )
+            .as_string(self.conn)
+        )
+        result = self.cur.fetchone()
+        assert result is not None
+        if result == (None, None):
+            # table is empty TODO: handle this appropriatedly.
+            return None
+
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                DO $$
+                DECLARE
+                    i INT;
+                BEGIN
+                    FOR i IN 1..10 LOOP
+                        EXECUTE format('CREATE TABLE %I PARTITION OF %I FOR VALUES FROM (%L) TO (%L)',
+                            format('%I_partition_%s', {copy_table}, i), {copy_table},
+                            (NOW() + (i - 1) * INTERVAL '1 month')::date,
+                            (NOW() + i * INTERVAL '1 month')::date);
+                    END LOOP;
+                END $$;
+                """)
+            )
         )
 
     def drop_sequence_if_exists(self, *, seq: str) -> None:

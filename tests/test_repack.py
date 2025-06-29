@@ -26,6 +26,7 @@ from psycopack import (
     _const,
     _cur,
     _introspect,
+    _partition,
     _psycopg,
     _tracker,
 )
@@ -1983,6 +1984,36 @@ def test_when_repack_is_reinstantiated_after_swapping(
         # Pick up from clean-up
         new_repack.clean_up()
 
+        table_after = _collect_table_info(table="to_repack", connection=connection)
+        _assert_repack(
+            table_before=table_before,
+            table_after=table_after,
+            repack=repack,
+            cur=cur,
+        )
+
+
+def test_repack_with_range_partition(connection: _psycopg.Connection) -> None:
+    with _cur.get_cursor(connection) as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+        )
+        table_before = _collect_table_info(table="to_repack", connection=connection)
+        repack = Psycopack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+            partition_config=_partition.PartitionConfig(
+                column="datetime_field",
+                num_of_extra_partitions_ahead=10,
+                strategy=_partition.DateRangeStrategy(partition_by="DAY"),
+            ),
+        )
+        repack.full()
         table_after = _collect_table_info(table="to_repack", connection=connection)
         _assert_repack(
             table_before=table_before,
