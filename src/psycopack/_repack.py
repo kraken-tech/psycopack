@@ -7,7 +7,15 @@ import datetime
 import typing
 from collections import defaultdict
 
-from . import _commands, _cur, _identifiers, _introspect, _registry, _tracker
+from . import (
+    _commands,
+    _cur,
+    _identifiers,
+    _introspect,
+    _partition,
+    _registry,
+    _tracker,
+)
 from . import _psycopg as psycopg
 
 
@@ -134,6 +142,8 @@ class Psycopack:
         lock_timeout: datetime.timedelta = datetime.timedelta(seconds=10),
         schema: str = "public",
         allow_empty: bool = False,
+        # TODO: Add support for other types of partitioning.
+        partition_config: _partition.PartitionConfig | None = None,
     ) -> None:
         self.conn = conn
         self.cur = cur
@@ -147,6 +157,7 @@ class Psycopack:
             cur=self.cur,
             introspector=self.introspector,
             schema=schema,
+            partition_config=partition_config,
         )
 
         self.table = table

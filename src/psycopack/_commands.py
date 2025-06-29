@@ -4,7 +4,7 @@ from contextlib import contextmanager
 from textwrap import dedent
 from typing import Iterator
 
-from . import _cur, _introspect
+from . import _cur, _introspect, _partition
 from . import _psycopg as psycopg
 
 
@@ -16,11 +16,13 @@ class Command:
         cur: _cur.LoggedCursor,
         introspector: _introspect.Introspector,
         schema: str,
+        partition_config: _partition.PartitionConfig | None = None,
     ) -> None:
         self.conn = conn
         self.cur = cur
         self.introspector = introspector
         self.schema = schema
+        self.partition_config = partition_config
 
     def drop_constraint(self, *, table: str, constraint: str) -> None:
         self.cur.execute(
@@ -49,6 +51,16 @@ class Command:
         )
 
     def create_copy_table(self, *, base_table: str, copy_table: str) -> None:
+        if self.partition_config:
+            return self._create_partitioned_table(
+                base_table=base_table, copy_table=copy_table
+            )
+
+        self._create_non_partitioned_table(base_table=base_table, copy_table=copy_table)
+
+    def _create_non_partitioned_table(
+        self, *, base_table: str, copy_table: str
+    ) -> None:
         self.cur.execute(
             psycopg.sql.SQL(
                 dedent("""
@@ -63,6 +75,100 @@ class Command:
             )
             .as_string(self.conn)
         )
+
+    def _create_partitioned_table(self, *, base_table: str, copy_table: str) -> None:
+        if not isinstance(self.partition_config.strategy, _partition.DateRangeStrategy):
+            raise NotImplementedError
+
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                CREATE TABLE {schema}.{copy_table}
+                (LIKE {schema}.{table} INCLUDING DEFAULTS)
+                PARTITION BY RANGE ({column});
+                """)
+            )
+            .format(
+                table=psycopg.sql.Identifier(base_table),
+                copy_table=psycopg.sql.Identifier(copy_table),
+                schema=psycopg.sql.Identifier(self.schema),
+                column=psycopg.sql.Identifier(self.partition_config.column),
+            )
+            .as_string(self.conn)
+        )
+
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                SELECT
+                  MIN({column}) AS min,
+                  MAX({column}) AS max
+                FROM {schema}.{table};
+                """)
+            )
+            .format(
+                table=psycopg.sql.Identifier(base_table),
+                schema=psycopg.sql.Identifier(self.schema),
+                column=psycopg.sql.Identifier(self.partition_config.column),
+            )
+            .as_string(self.conn)
+        )
+        result = self.cur.fetchone()
+        assert result is not None
+        if result == (None, None):
+            # TODO: handle this appropriatedly. The table is empty.
+            raise NotImplementedError()
+
+        is_days = bool(self.partition_config.strategy.partition_by == "DAY")
+        extra_partitions = self.partition_config.num_of_extra_partitions_ahead
+
+        normalised_start = result[0].date()
+        if is_days:
+            normalised_end = result[1].date() + datetime.timedelta(
+                days=extra_partitions
+            )
+        else:
+            # This would be much easier if `timedelta(months=...)` was a
+            # thing...
+            def _add_months(base: datetime.date, months: int) -> datetime.date:
+                total_months = base.month - 1 + months
+                year = base.year + (months // 12)
+                month = (total_months % 12) + 1
+                return datetime.date(year, month, 1)
+
+            normalised_end = _add_months(result[1].date(), extra_partitions)
+
+        partition_range_pairs: list[tuple[datetime.date, datetime.date]] = []
+        current_date = normalised_start
+        while current_date <= normalised_end:
+            start = current_date
+            if is_days:
+                end = start + datetime.timedelta(days=1)
+            else:
+                end = _add_months(start, 1)
+            partition_range_pairs.append((start, end))
+            current_date = end
+
+        breakpoint()
+        for partition_start, partition_end in partition_range_pairs:
+            partition_name = (
+                f"{base_table}_{partition_start.year}_{partition_start.month}_"
+                f"{partition_start.day}"
+            )
+            self.cur.execute(
+                psycopg.sql.SQL(
+                    dedent("""
+                    CREATE TABLE {schema}.{partition_name} OF {schema}.{table}
+                    FOR VALUES FROM {partition_start} TO {partition_end};
+                    """)
+                ).format(
+                    schema=psycopg.sql.Identifier(self.schema),
+                    partition_name=psycopg.sql.Identifier(partition_name),
+                    table=psycopg.sql.Identifier(copy_table),
+                    partition_start=psycopg.sql.Literal(partition_start.isoformat()),
+                    partition_end=psycopg.sql.Literal(partition_end.isoformat()),
+                )
+            )
 
     def drop_sequence_if_exists(self, *, seq: str) -> None:
         self.cur.execute(
