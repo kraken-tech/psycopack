@@ -264,7 +264,14 @@ class Introspector:
                   pg_namespace.nspname AS schema,
                   (
                     SELECT
-                      tableowner = current_user
+                      tableowner = current_user OR tableowner IN (
+                        SELECT
+                          rolname
+                        FROM
+                          pg_roles
+                        WHERE
+                          pg_has_role(current_user, pg_roles.oid, 'MEMBER')
+                      )
                     FROM
                       pg_tables
                     WHERE
@@ -657,7 +664,14 @@ class Introspector:
             psycopg.sql.SQL(
                 dedent("""
                 SELECT
-                  tableowner = current_user
+                  tableowner = current_user OR tableowner IN (
+                    SELECT
+                      rolname
+                    FROM
+                      pg_roles
+                    WHERE
+                      pg_has_role(current_user, pg_roles.oid, 'MEMBER')
+                    )
                 FROM
                   pg_tables
                 WHERE
