@@ -2026,3 +2026,27 @@ def test_populate_backfill_log(
         )
         result = cur.fetchall()
         assert result == expected_ranges
+
+
+def test_with_skip_permissions_check(
+    connection: _psycopg.Connection,
+) -> None:
+    with _cur.get_cursor(connection, logged=True) as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+        )
+
+        with mock.patch.object(
+            Psycopack, "_check_user_permissions", autospec=True
+        ) as mocked:
+            Psycopack(
+                table="to_repack",
+                batch_size=1,
+                conn=connection,
+                cur=cur,
+                skip_permissions_check=True,
+            )
+            mocked.assert_not_called()
