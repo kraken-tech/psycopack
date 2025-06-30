@@ -134,6 +134,7 @@ class Psycopack:
         lock_timeout: datetime.timedelta = datetime.timedelta(seconds=10),
         schema: str = "public",
         allow_empty: bool = False,
+        skip_permissions_check: bool = False,
     ) -> None:
         self.conn = conn
         self.cur = cur
@@ -152,7 +153,8 @@ class Psycopack:
         self.table = table
         self.schema = schema
         self._check_table_exists()
-        self._check_user_permissions()
+        if not skip_permissions_check:
+            self._check_user_permissions()
 
         self.batch_size = batch_size
         self.post_backfill_batch_callback = post_backfill_batch_callback
