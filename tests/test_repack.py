@@ -39,6 +39,7 @@ class _TableInfo:
     referring_fks: list[_introspect.ReferringForeignKey]
     constraints: list[_introspect.Constraint]
     pk_seq: str
+    pk_seq_val: int | None
 
 
 def _collect_table_info(
@@ -60,6 +61,10 @@ def _collect_table_info(
             table=table, types=["c", "f", "n", "p", "u", "t", "x"]
         )
         pk_seq = introspector.get_pk_sequence_name(table=table)
+        if pk_seq:
+            pk_seq_val = introspector.get_pk_sequence_value(seq=pk_seq)
+        else:
+            pk_seq_val = None
 
     return _TableInfo(
         oid=oid,
@@ -67,6 +72,7 @@ def _collect_table_info(
         referring_fks=referring_fks,
         constraints=constraints,
         pk_seq=pk_seq,
+        pk_seq_val=pk_seq_val,
     )
 
 
@@ -127,6 +133,10 @@ def _assert_repack(
     assert table_before.referring_fks == table_after.referring_fks
     assert table_before.constraints == table_after.constraints
     assert table_before.pk_seq == table_after.pk_seq
+    if table_before.pk_seq_val is None or table_before.pk_seq_val > 0:
+        assert table_before.pk_seq_val == table_after.pk_seq_val
+    else:
+        assert table_after.pk_seq_val == 2**31
 
     # All functions and triggers are removed.
     trigger_info = _get_trigger_info(repack, cur)
@@ -1272,6 +1282,36 @@ def test_repack_full_with_serial_pk(
             conn=connection,
             cur=cur,
             convert_pk_to_bigint=convert_pk_to_bigint,
+        )
+        repack.full()
+        table_after = _collect_table_info(table="to_repack", connection=connection)
+        _assert_repack(
+            table_before=table_before,
+            table_after=table_after,
+            repack=repack,
+            cur=cur,
+        )
+
+
+def test_when_table_has_negative_pk_values(
+    connection: _psycopg.Connection,
+) -> None:
+    with _cur.get_cursor(connection, logged=True) as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+            pk_type="integer",
+            pk_start=-200,
+        )
+        table_before = _collect_table_info(table="to_repack", connection=connection)
+        repack = Psycopack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+            convert_pk_to_bigint=True,
         )
         repack.full()
         table_after = _collect_table_info(table="to_repack", connection=connection)

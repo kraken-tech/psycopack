@@ -381,6 +381,11 @@ class Psycopack:
                     self.command.swap_pk_sequence_name(
                         first_table=self.table, second_table=self.copy_table
                     )
+                    self.command.transfer_pk_sequence_value(
+                        source_table=self.table,
+                        dest_table=self.copy_table,
+                        convert_pk_to_bigint=self.convert_pk_to_bigint,
+                    )
                 self.command.rename_table(
                     table_from=self.table, table_to=self.repacked_name
                 )
@@ -434,6 +439,12 @@ class Psycopack:
                 self.command.swap_pk_sequence_name(
                     first_table=self.table, second_table=self.repacked_name
                 )
+                self.command.transfer_pk_sequence_value(
+                    source_table=self.table,
+                    dest_table=self.repacked_name,
+                    convert_pk_to_bigint=self.convert_pk_to_bigint,
+                )
+
             self.command.rename_table(table_from=self.table, table_to=self.copy_table)
             self.command.rename_table(
                 table_from=self.repacked_name, table_to=self.table
