@@ -486,6 +486,30 @@ class Command:
         self.rename_sequence(seq_from=second_seq, seq_to=first_seq)
         self.rename_sequence(seq_from=temp_seq, seq_to=second_seq)
 
+    def transfer_pk_sequence_value(
+        self, *, source_table: str, dest_table: str, convert_pk_to_bigint: bool
+    ) -> None:
+        source_seq = self.introspector.get_pk_sequence_name(table=source_table)
+        dest_seq = self.introspector.get_pk_sequence_name(table=dest_table)
+        value = self.introspector.get_pk_sequence_value(seq=source_seq)
+
+        if convert_pk_to_bigint and value < 0:
+            # special case handling where negative PK values were used before bigint conversion
+            value = 2**31  # reset to positive, specifically the first bigint value
+
+        # TODO: try to correctly restore a negative PK sequence value if we revert swap
+        # while doing a bigint conversion
+
+        self.cur.execute(
+            psycopg.sql.SQL("SELECT setval('{schema}.{sequence}', {value});")
+            .format(
+                schema=psycopg.sql.Identifier(self.schema),
+                sequence=psycopg.sql.Identifier(dest_seq),
+                value=psycopg.sql.SQL(str(value)),
+            )
+            .as_string(self.conn)
+        )
+
     def acquire_access_exclusive_lock(self, *, table: str) -> None:
         self.cur.execute(
             psycopg.sql.SQL("LOCK TABLE {schema}.{table} IN ACCESS EXCLUSIVE MODE;")

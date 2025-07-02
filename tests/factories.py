@@ -13,6 +13,7 @@ def create_table_for_repacking(
     with_exclusion_constraint: bool = False,
     pk_type: str = "SERIAL",
     pk_name: str = "id",
+    pk_start: int = 1,
     ommit_sequence: bool = False,
     schema: str = "public",
 ) -> None:
@@ -45,7 +46,9 @@ def create_table_for_repacking(
     ):
         # Create a sequence manually.
         seq = f"{table_name}_seq"
-        cur.execute(f"CREATE SEQUENCE {schema}.{seq};")
+        cur.execute(
+            f"CREATE SEQUENCE {schema}.{seq} MINVALUE {pk_start} START WITH {pk_start};"
+        )
         pk_type = f"{pk_type} DEFAULT NEXTVAL('{schema}.{seq}')"
 
     cur.execute(
@@ -191,7 +194,7 @@ def create_table_for_repacking(
     cur.execute(
         dedent(f"""
         INSERT INTO {schema}.referring_table ({table_name}_{pk_name})
-        SELECT generate_series(1, {referring_table_rows});
+        SELECT generate_series({pk_start}, {pk_start + referring_table_rows - 1});
     """)
     )
     cur.execute(
@@ -213,7 +216,7 @@ def create_table_for_repacking(
     cur.execute(
         dedent(f"""
         INSERT INTO {schema}.not_valid_referring_table ({table_name}_{pk_name})
-        SELECT generate_series(1, {referring_table_rows});
+        SELECT generate_series({pk_start}, {pk_start + referring_table_rows - 1});
     """)
     )
 
