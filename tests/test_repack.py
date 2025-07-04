@@ -1974,6 +1974,52 @@ def test_user_with_bare_minimum_permissions(connection: _psycopg.Connection) -> 
         )
 
 
+def test_user_with_permissions_via_role(connection: _psycopg.Connection) -> None:
+    schema = "sweet_schema"
+    with _cur.get_cursor(connection, logged=True) as cur:
+        cur.execute(f"CREATE SCHEMA {schema};")
+        cur.execute(f"REVOKE CREATE ON SCHEMA {schema} FROM PUBLIC;")
+        cur.execute("DROP ROLE IF EXISTS owner_role;")
+        cur.execute("CREATE ROLE owner_role CREATEROLE;")
+        cur.execute("GRANT CREATE, USAGE ON SCHEMA sweet_schema TO owner_role;")
+        cur.execute("DROP USER IF EXISTS sweet_user;")
+        cur.execute("CREATE USER sweet_user;")
+        cur.execute("GRANT owner_role TO sweet_user;")
+        cur.execute("SET ROLE owner_role;")
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=10,
+            schema=schema,
+        )
+        table_before = _collect_table_info(
+            table="to_repack",
+            connection=connection,
+            schema=schema,
+        )
+        cur.execute("SET ROLE sweet_user;")
+        repack = Psycopack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+            schema=schema,
+        )
+        repack.full()
+        table_after = _collect_table_info(
+            table="to_repack",
+            connection=connection,
+            schema=schema,
+        )
+        _assert_repack(
+            table_before=table_before,
+            table_after=table_after,
+            repack=repack,
+            cur=cur,
+        )
+
+
 def test_when_repack_is_reinstantiated_after_swapping(
     connection: _psycopg.Connection,
 ) -> None:
