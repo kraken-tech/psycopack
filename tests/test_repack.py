@@ -3,8 +3,6 @@ from textwrap import dedent
 from typing import Tuple, Union
 from unittest import mock
 
-from psycopg.errors import NumericValueOutOfRange
-
 import pytest
 
 from psycopack import (
@@ -1399,15 +1397,6 @@ def test_when_table_has_negative_pk_values(
         )
 
 
-@pytest.mark.xfail(
-    raises=NumericValueOutOfRange,
-    reason="""
-E           psycopg.errors.NumericValueOutOfRange: integer out of range
-E           CONTEXT:  SQL function "psycopack_repacked_6723301_fun" statement 1
-E           SQL statement "SELECT "public"."psycopack_repacked_6723301_fun"(NEW."id", NEW."id")"
-E           PL/pgSQL function psycopack_repacked_6723301_tgr() line 4 at PERFORM
-""",
-)
 def test_with_writes_when_table_has_negative_pk_values(
     connection: _psycopg.Connection,
 ) -> None:

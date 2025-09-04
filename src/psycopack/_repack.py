@@ -403,7 +403,6 @@ class Psycopack:
                     self.command.transfer_pk_sequence_value(
                         source_table=self.table,
                         dest_table=self.copy_table,
-                        convert_pk_to_bigint=self.convert_pk_to_bigint,
                     )
                 self.command.rename_table(
                     table_from=self.table, table_to=self.repacked_name
@@ -461,7 +460,6 @@ class Psycopack:
                 self.command.transfer_pk_sequence_value(
                     source_table=self.table,
                     dest_table=self.repacked_name,
-                    convert_pk_to_bigint=self.convert_pk_to_bigint,
                 )
 
             self.command.rename_table(table_from=self.table, table_to=self.copy_table)
@@ -506,6 +504,11 @@ class Psycopack:
                     table=self.table, trigger=self.repacked_trigger
                 )
                 self.command.drop_function_if_exists(function=self.repacked_function)
+
+                if self.convert_pk_to_bigint and self.introspector.get_pk_sequence_name(
+                    table=self.table
+                ):
+                    self.command.update_pk_sequence_value(table=self.table)
 
                 for idx_sql in indexes:
                     for index_data in indexes[idx_sql]:
