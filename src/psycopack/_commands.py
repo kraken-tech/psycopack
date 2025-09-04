@@ -74,17 +74,18 @@ class Command:
             .as_string(self.conn)
         )
 
-    def create_sequence(self, *, seq: str, bigint: bool) -> None:
+    def create_sequence(self, *, seq: str, bigint: bool, minvalue: int) -> None:
         if bigint:
-            sql = "CREATE SEQUENCE {schema}.{seq} AS BIGINT;"
+            sql = "CREATE SEQUENCE {schema}.{seq} AS BIGINT MINVALUE {minvalue};"
         else:
-            sql = "CREATE SEQUENCE {schema}.{seq};"
+            sql = "CREATE SEQUENCE {schema}.{seq} MINVALUE {minvalue};"
 
         self.cur.execute(
             psycopg.sql.SQL(sql)
             .format(
                 seq=psycopg.sql.Identifier(seq),
                 schema=psycopg.sql.Identifier(self.schema),
+                minvalue=psycopg.sql.Literal(minvalue),
             )
             .as_string(self.conn)
         )

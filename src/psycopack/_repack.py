@@ -599,7 +599,7 @@ class Psycopack:
                 always=(pk_info.identity_type == "a"),
                 pk_column=self.pk_column,
             )
-        elif self.introspector.get_pk_sequence_name(table=self.table):
+        elif seq := self.introspector.get_pk_sequence_name(table=self.table):
             # Create a new sequence for the copied table's id column so that it
             # does not depend on the original's one. Otherwise, we wouldn't be
             # able to delete the original table after the repack process is
@@ -608,6 +608,7 @@ class Psycopack:
             self.command.create_sequence(
                 seq=self.id_seq,
                 bigint=("big" in pk_info.data_types[0].lower()),
+                minvalue=self.introspector.get_pk_sequence_min_value(seq=seq),
             )
             self.command.set_table_id_seq(
                 table=self.copy_table,
