@@ -8,6 +8,7 @@ from ._introspect import BackfillBatch
 from ._repack import (
     BasePsycopackError,
     CompositePrimaryKey,
+    DeferrableUniqueConstraint,
     InheritedTable,
     InvalidIndexes,
     InvalidPrimaryKeyTypeForConversion,
@@ -32,6 +33,7 @@ __all__ = (
     "BackfillBatch",
     "BasePsycopackError",
     "CompositePrimaryKey",
+    "DeferrableUniqueConstraint",
     "FailureDueToLockTimeout",
     "InheritedTable",
     "InvalidIndexes",

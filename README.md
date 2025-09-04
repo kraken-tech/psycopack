@@ -122,6 +122,7 @@ The following types of tables aren't currently supported:
   - `smallserial`
 - Tables with triggers.
 - Tables with invalid indexes (the user should drop or re-index them first).
+- Tables with deferrable unique constraints.
 - Referring foreign keys on a different schema than the original table.
 
 ## Required user permissions (or privileges)
