@@ -1,6 +1,9 @@
 import dataclasses
 from textwrap import dedent
+from typing import Tuple, Union
 from unittest import mock
+
+from psycopg.errors import NumericValueOutOfRange
 
 import pytest
 
@@ -137,7 +140,7 @@ def _assert_repack(
     if table_before.pk_seq_val is None or table_before.pk_seq_val > 0:
         assert table_before.pk_seq_val == table_after.pk_seq_val
     else:
-        assert table_after.pk_seq_val == 2**31
+        assert table_after.pk_seq_val is None or table_after.pk_seq_val >= 2**31
 
     # All functions and triggers are removed.
     trigger_info = _get_trigger_info(repack, cur)
@@ -164,6 +167,78 @@ def _assert_reset(repack: Psycopack, cur: _cur.Cursor) -> None:
     assert _get_sequence_info(repack, cur).sequence_exists is False
     assert repack.introspector.get_table_oid(table=repack.copy_table) is None
     assert repack.introspector.get_table_oid(table=repack.tracker.tracker_table) is None
+
+
+def _do_writes(
+    table: str,
+    cur: _cur.Cursor,
+    schema: str = "public",
+    check_table: str | None = None,
+) -> None:
+    """
+    Do some writes (insert, update, delete) to check that the copy function works.
+    """
+    cur.execute(
+        dedent(f"""
+        INSERT INTO {schema}.{table} (
+            var_with_btree,
+            var_with_pattern_ops,
+            int_with_check,
+            int_with_not_valid_check,
+            int_with_long_index_name,
+            var_with_unique_idx,
+            var_with_unique_const,
+            valid_fk,
+            not_valid_fk,
+            {table},
+            var_maybe_with_exclusion,
+            var_with_multiple_idx
+        )
+        VALUES (
+            substring(md5(random()::text), 1, 10),
+            substring(md5(random()::text), 1, 10),
+            (floor(random() * 10) + 1)::int,
+            (floor(random() * 10) + 1)::int,
+            (floor(random() * 10) + 1)::int,
+            substring(md5(random()::text), 1, 10),
+            substring(md5(random()::text), 1, 10),
+            (floor(random() * 10) + 1)::int,
+            (floor(random() * 10) + 1)::int,
+            (floor(random() * 10) + 1)::int,
+            substring(md5(random()::text), 1, 10),
+            substring(md5(random()::text), 1, 10)
+        )
+        RETURNING id;
+    """)
+    )
+    result = cur.fetchone()
+    assert result is not None
+    id_ = result[0]
+    if check_table is not None:
+        assert _query_row(table=table, id_=id_, cur=cur, schema=schema) == _query_row(
+            table=check_table, id_=id_, cur=cur, schema=schema
+        )
+
+    cur.execute(f"UPDATE {schema}.{table} SET var_with_btree = 'foo' WHERE id = {id_};")
+    if check_table is not None:
+        assert _query_row(table=table, id_=id_, cur=cur, schema=schema) == _query_row(
+            table=check_table, id_=id_, cur=cur, schema=schema
+        )
+
+    cur.execute(f"DELETE FROM {schema}.{table} WHERE id = {id_};")
+    assert _query_row(table=table, id_=id_, cur=cur, schema=schema) is None
+    if check_table is not None:
+        assert _query_row(table=check_table, id_=id_, cur=cur, schema=schema) is None
+
+
+def _query_row(
+    table: str,
+    id_: int,
+    cur: _cur.Cursor,
+    schema: str = "public",
+) -> Tuple[Union[int, str], ...] | None:
+    cur.execute(f"SELECT * FROM {schema}.{table} WHERE id = {id_};")
+    return cur.fetchone()
 
 
 @pytest.mark.parametrize(
@@ -1315,6 +1390,56 @@ def test_when_table_has_negative_pk_values(
             convert_pk_to_bigint=True,
         )
         repack.full()
+        table_after = _collect_table_info(table="to_repack", connection=connection)
+        _assert_repack(
+            table_before=table_before,
+            table_after=table_after,
+            repack=repack,
+            cur=cur,
+        )
+
+
+@pytest.mark.xfail(
+    raises=NumericValueOutOfRange,
+    reason="""
+E           psycopg.errors.NumericValueOutOfRange: integer out of range
+E           CONTEXT:  SQL function "psycopack_repacked_6723301_fun" statement 1
+E           SQL statement "SELECT "public"."psycopack_repacked_6723301_fun"(NEW."id", NEW."id")"
+E           PL/pgSQL function psycopack_repacked_6723301_tgr() line 4 at PERFORM
+""",
+)
+def test_with_writes_when_table_has_negative_pk_values(
+    connection: _psycopg.Connection,
+) -> None:
+    with _cur.get_cursor(connection, logged=True) as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+            pk_type="integer",
+            pk_start=-200,
+        )
+        table_before = _collect_table_info(table="to_repack", connection=connection)
+
+        repack = Psycopack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+            convert_pk_to_bigint=True,
+        )
+        repack.pre_validate()
+        repack.setup_repacking()
+        repack.backfill()
+        _do_writes(table="to_repack", cur=cur, check_table=repack.copy_table)
+        repack.sync_schemas()
+        _do_writes(table="to_repack", cur=cur, check_table=repack.copy_table)
+        repack.swap()
+        _do_writes(table="to_repack", cur=cur, check_table=repack.repacked_name)
+        repack.clean_up()
+        _do_writes(table="to_repack", cur=cur)
+
         table_after = _collect_table_info(table="to_repack", connection=connection)
         _assert_repack(
             table_before=table_before,
