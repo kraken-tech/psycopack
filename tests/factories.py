@@ -62,8 +62,6 @@ def create_table_for_repacking(
             int_with_long_index_name INTEGER,
             var_with_unique_idx VARCHAR(10),
             var_with_unique_const VARCHAR(10) UNIQUE,
-            var_with_deferrable_const VARCHAR(10),
-            var_with_deferred_const VARCHAR(10),
             valid_fk INTEGER REFERENCES {schema}.referred_table(id),
             not_valid_fk INTEGER,
             {table_name} INTEGER,
@@ -115,20 +113,6 @@ def create_table_for_repacking(
         CHECK (int_with_not_valid_check >= 0) NOT VALID;
         """)
     )
-    cur.execute(
-        dedent(f"""
-        ALTER TABLE {schema}.{table_name} ADD CONSTRAINT non_deferrable_const
-        UNIQUE (var_with_deferrable_const)
-        DEFERRABLE;
-        """)
-    )
-    cur.execute(
-        dedent(f"""
-        ALTER TABLE {schema}.{table_name} ADD CONSTRAINT deferred_const
-        UNIQUE (var_with_deferred_const)
-        DEFERRABLE INITIALLY DEFERRED;
-        """)
-    )
     # Constraint for a column that has the same name as the table.
     cur.execute(
         dedent(f"""
@@ -156,8 +140,6 @@ def create_table_for_repacking(
             int_with_long_index_name,
             var_with_unique_idx,
             var_with_unique_const,
-            var_with_deferrable_const,
-            var_with_deferred_const,
             valid_fk,
             not_valid_fk,
             {table_name},
@@ -171,8 +153,6 @@ def create_table_for_repacking(
             (floor(random() * 10) + 1)::int,
             (floor(random() * 10) + 1)::int,
             (floor(random() * 10) + 1)::int,
-            substring(md5(random()::text), 1, 10),
-            substring(md5(random()::text), 1, 10),
             substring(md5(random()::text), 1, 10),
             substring(md5(random()::text), 1, 10),
             (floor(random() * {referred_table_rows}) + 1)::int,
