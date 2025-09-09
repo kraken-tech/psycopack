@@ -7,6 +7,7 @@ import pytest
 from psycopack import (
     BackfillBatch,
     CompositePrimaryKey,
+    DeferrableUniqueConstraint,
     FailureDueToLockTimeout,
     InheritedTable,
     InvalidIndexes,
@@ -1356,8 +1357,6 @@ def test_when_table_has_large_value_being_inserted(
                 int_with_long_index_name,
                 var_with_unique_idx,
                 var_with_unique_const,
-                var_with_deferrable_const,
-                var_with_deferred_const,
                 valid_fk,
                 not_valid_fk,
                 to_repack,
@@ -1370,8 +1369,6 @@ def test_when_table_has_large_value_being_inserted(
                 (floor(random() * 10) + 1)::int,
                 (floor(random() * 10) + 1)::int,
                 (floor(random() * 10) + 1)::int,
-                substring(md5(random()::text), 1, 10),
-                substring(md5(random()::text), 1, 10),
                 substring(md5(random()::text), 1, 10),
                 substring(md5(random()::text), 1, 10),
                 (floor(random() * 10) + 1)::int,
@@ -1752,6 +1749,37 @@ def test_with_fks_from_another_schema(connection: _psycopg.Connection) -> None:
         )
         with pytest.raises(
             ReferringForeignKeyInDifferentSchema, match=f"{schema}.referring_table"
+        ):
+            repack.full()
+
+
+def test_with_deferrable_unique_constraint(connection: _psycopg.Connection) -> None:
+    with _cur.get_cursor(connection, logged=True) as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+        )
+        repack = Psycopack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+        )
+        cur.execute(
+            "ALTER TABLE to_repack DROP CONSTRAINT to_repack_var_with_unique_const_key;"
+        )
+        cur.execute(
+            dedent("""
+                ALTER TABLE to_repack ADD CONSTRAINT to_repack_var_with_unique_const_key
+                UNIQUE (var_with_unique_const)
+                DEFERRABLE;
+            """)
+        )
+
+        with pytest.raises(
+            DeferrableUniqueConstraint, match="to_repack_var_with_unique_const_key"
         ):
             repack.full()
 

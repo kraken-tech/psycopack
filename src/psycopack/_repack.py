@@ -59,6 +59,10 @@ class ReferringForeignKeyInDifferentSchema(BasePsycopackError):
     pass
 
 
+class DeferrableUniqueConstraint(BasePsycopackError):
+    pass
+
+
 class NoCreateAndUsagePrivilegeOnSchema(BasePsycopackError):
     pass
 
@@ -331,6 +335,21 @@ class Psycopack:
                     f"foreign keys in another schema. The table {self.table} "
                     f"has the following referring foreign keys in a different "
                     f"schema: {fks_in_different_schema}."
+                )
+
+            deferrable_unique_constraints = [
+                c.name
+                for c in self.introspector.get_constraints(
+                    table=self.table, types=["u"]
+                )
+                if c.is_deferrable
+            ]
+            if deferrable_unique_constraints:
+                raise DeferrableUniqueConstraint(
+                    f"Psycopack does not currently support tables with "
+                    f"deferrable unique constraints. The table {self.table} "
+                    f"has the following deferrable unique constraints: "
+                    f"{deferrable_unique_constraints}."
                 )
 
     def setup_repacking(self) -> None:
@@ -758,8 +777,6 @@ class Psycopack:
                 # From previous steps, the index name is the same as the
                 # constraint, not a typo!
                 index=constraint_name,
-                is_deferrable=cons.is_deferrable,
-                is_deferred=cons.is_deferred,
             )
 
     def _create_check_and_fk_constraints(self) -> None:

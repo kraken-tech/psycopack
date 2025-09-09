@@ -295,23 +295,12 @@ class Command:
         table: str,
         constraint: str,
         index: str,
-        is_deferrable: bool,
-        is_deferred: bool,
     ) -> None:
         add_constraint_sql = dedent("""
             ALTER TABLE {schema}.{table}
             ADD CONSTRAINT {constraint}
-            UNIQUE USING INDEX {index}
+            UNIQUE USING INDEX {index} NOT DEFERRABLE
         """)
-        if is_deferrable:
-            add_constraint_sql += " DEFERRABLE"
-        else:
-            add_constraint_sql += " NOT DEFERRABLE"
-
-        if is_deferred:
-            add_constraint_sql += " INITIALLY DEFERRED"
-        else:
-            add_constraint_sql += " INITIALLY IMMEDIATE"
 
         self.cur.execute(
             psycopg.sql.SQL(add_constraint_sql)
