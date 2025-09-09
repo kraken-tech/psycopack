@@ -1397,8 +1397,17 @@ def test_when_table_has_negative_pk_values(
         )
 
 
+@pytest.mark.parametrize(
+    "initial_pk_type",
+    (
+        "integer",
+        "serial",
+        "smallint",
+        "smallserial",
+    ),
+)
 def test_with_writes_when_table_has_negative_pk_values(
-    connection: _psycopg.Connection,
+    connection: _psycopg.Connection, initial_pk_type: str
 ) -> None:
     with _cur.get_cursor(connection, logged=True) as cur:
         factories.create_table_for_repacking(
@@ -1406,7 +1415,7 @@ def test_with_writes_when_table_has_negative_pk_values(
             cur=cur,
             table_name="to_repack",
             rows=100,
-            pk_type="integer",
+            pk_type=initial_pk_type,
             pk_start=-200,
         )
         table_before = _collect_table_info(table="to_repack", connection=connection)
