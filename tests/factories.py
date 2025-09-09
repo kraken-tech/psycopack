@@ -70,6 +70,12 @@ def create_table_for_repacking(
         );
     """)
     )
+    if "serial" in pk_type.lower():
+        seq = f"{table_name}_{pk_name}_seq"
+        cur.execute(
+            f"ALTER SEQUENCE {schema}.{seq} MINVALUE {pk_start} RESTART WITH {pk_start};"
+        )
+
     cur.execute(f"CREATE INDEX btree_idx ON {schema}.{table_name} (var_with_btree);")
     cur.execute(
         f"CREATE INDEX pattern_ops_idx ON {schema}.{table_name} (var_with_pattern_ops varchar_pattern_ops);"

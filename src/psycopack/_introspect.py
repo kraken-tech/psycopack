@@ -628,6 +628,26 @@ class Introspector:
         assert isinstance(value, int)
         return value
 
+    def get_pk_sequence_min_value(self, *, seq: str) -> int:
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                    SELECT min_value FROM pg_sequences
+                    WHERE schemaname = {schema} AND sequencename = {sequence};
+                """)
+            )
+            .format(
+                schema=psycopg.sql.Literal(self.schema),
+                sequence=psycopg.sql.Literal(seq),
+            )
+            .as_string(self.conn)
+        )
+        result = self.cur.fetchone()
+        assert result is not None
+        value = result[0]
+        assert isinstance(value, int)
+        return value
+
     def get_backfill_batch(self, *, table: str) -> BackfillBatch | None:
         self.cur.execute(
             psycopg.sql.SQL(
