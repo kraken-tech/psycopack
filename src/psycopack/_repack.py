@@ -7,7 +7,15 @@ import datetime
 import typing
 from collections import defaultdict
 
-from . import _commands, _cur, _identifiers, _introspect, _registry, _tracker
+from . import (
+    _commands,
+    _cur,
+    _identifiers,
+    _introspect,
+    _registry,
+    _sync_strategy,
+    _tracker,
+)
 from . import _psycopg as psycopg
 
 
@@ -139,6 +147,7 @@ class Psycopack:
         schema: str = "public",
         allow_empty: bool = False,
         skip_permissions_check: bool = False,
+        sync_strategy: _sync_strategy.SyncStrategy = _sync_strategy.SyncStrategy.DIRECT_TRIGGER,
     ) -> None:
         self.conn = conn
         self.cur = cur
@@ -165,6 +174,7 @@ class Psycopack:
         self.lock_timeout = lock_timeout
         self.convert_pk_to_bigint = convert_pk_to_bigint
         self.allow_empty = allow_empty
+        self.sync_strategy = sync_strategy
 
         # Names for psycopack objects are stored in the Registry
         self.registry = _registry.Registry(

@@ -21,6 +21,7 @@ from psycopack import (
     PrimaryKeyNotFound,
     Psycopack,
     ReferringForeignKeyInDifferentSchema,
+    SyncStrategy,
     TableDoesNotExist,
     TableHasTriggers,
     TableIsEmpty,
@@ -2287,3 +2288,41 @@ def test_with_skip_permissions_check(
                 skip_permissions_check=True,
             )
             mocked.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "pk_type",
+    ("bigint", "bigserial", "integer", "serial", "smallint", "smallserial"),
+)
+def test_repack_with_change_log_strategy(
+    connection: _psycopg.Connection, pk_type: str
+) -> None:
+    with _cur.get_cursor(connection, logged=True) as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+            pk_type=pk_type,
+        )
+        table_before = _collect_table_info(table="to_repack", connection=connection)
+        repack = Psycopack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+            sync_strategy=SyncStrategy.CHANGE_LOG,
+        )
+        repack.pre_validate()
+        repack.setup_repacking()
+        repack.backfill()
+        repack.sync_schemas()
+        repack.swap()
+        repack.clean_up()
+        table_after = _collect_table_info(table="to_repack", connection=connection)
+        _assert_repack(
+            table_before=table_before,
+            table_after=table_after,
+            repack=repack,
+            cur=cur,
+        )

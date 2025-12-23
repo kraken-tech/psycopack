@@ -26,6 +26,7 @@ from ._repack import (
     TableIsEmpty,
     UnsupportedPrimaryKey,
 )
+from ._sync_strategy import SyncStrategy
 from ._tracker import FailureDueToLockTimeout, Stage
 
 
@@ -48,6 +49,7 @@ __all__ = (
     "ReferringForeignKeyInDifferentSchema",
     "Psycopack",
     "Stage",
+    "SyncStrategy",
     "TableDoesNotExist",
     "TableHasTriggers",
     "TableIsEmpty",
