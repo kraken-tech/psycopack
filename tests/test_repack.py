@@ -1626,7 +1626,9 @@ def test_repeat_stage_when_lock_timeout(connection: _psycopg.Connection) -> None
         repack.pre_validate()
 
         # Setting up the copy relations may time out (specially the trigger).
-        with mock.patch.object(repack.command, "create_copy_trigger") as mocked:
+        with mock.patch.object(
+            repack.command, "create_source_to_copy_trigger"
+        ) as mocked:
             mocked.side_effect = side_effect
             with pytest.raises(FailureDueToLockTimeout):
                 repack.setup_repacking()

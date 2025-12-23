@@ -369,7 +369,7 @@ class Psycopack:
         ):
             self._create_copy_table()
             self._create_copy_function()
-            self._create_copy_trigger()
+            self._create_source_to_copy_table_trigger()
             self._create_backfill_log()
             self._populate_backfill_log()
 
@@ -430,7 +430,7 @@ class Psycopack:
                 self.command.drop_trigger_if_exists(
                     table=self.table, trigger=self.repacked_trigger
                 )
-                self.command.create_copy_trigger(
+                self.command.create_source_to_copy_trigger(
                     trigger_name=self.repacked_trigger,
                     function=self.repacked_function,
                     table_from=self.table,
@@ -477,7 +477,7 @@ class Psycopack:
                 table_from=self.repacked_name, table_to=self.table
             )
             self._create_copy_function()
-            self._create_copy_trigger()
+            self._create_source_to_copy_table_trigger()
 
     def clean_up(self) -> None:
         with self.tracker.track(_tracker.Stage.CLEAN_UP):
@@ -659,9 +659,9 @@ class Psycopack:
             pk_column=self.pk_column,
         )
 
-    def _create_copy_trigger(self) -> None:
+    def _create_source_to_copy_table_trigger(self) -> None:
         self.command.drop_trigger_if_exists(table=self.table, trigger=self.trigger)
-        self.command.create_copy_trigger(
+        self.command.create_source_to_copy_trigger(
             trigger_name=self.trigger,
             function=self.function,
             table_from=self.table,

@@ -172,7 +172,7 @@ class Command:
             .as_string(self.conn)
         )
 
-    def create_copy_trigger(
+    def create_source_to_copy_trigger(
         self,
         trigger_name: str,
         function: str,
