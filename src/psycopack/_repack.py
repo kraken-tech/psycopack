@@ -184,6 +184,7 @@ class Psycopack:
             introspector=self.introspector,
             command=self.command,
             table=table,
+            sync_strategy=sync_strategy,
         )
         registry_row = self.registry.get_registry_row()
         self.copy_table = registry_row.copy_table

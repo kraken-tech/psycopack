@@ -5,6 +5,7 @@ A customizable way to repack a table using psycopg.
 from ._conn import get_db_connection
 from ._cur import get_cursor
 from ._introspect import BackfillBatch
+from ._registry import RegistryException, UnexpectedSyncStrategy
 from ._repack import (
     BasePsycopackError,
     CompositePrimaryKey,
@@ -47,12 +48,14 @@ __all__ = (
     "PostBackfillBatchCallback",
     "PrimaryKeyNotFound",
     "ReferringForeignKeyInDifferentSchema",
+    "RegistryException",
     "Psycopack",
     "Stage",
     "SyncStrategy",
     "TableDoesNotExist",
     "TableHasTriggers",
     "TableIsEmpty",
+    "UnexpectedSyncStrategy",
     "UnsupportedPrimaryKey",
     "get_cursor",
     "get_db_connection",

@@ -25,6 +25,7 @@ from psycopack import (
     TableDoesNotExist,
     TableHasTriggers,
     TableIsEmpty,
+    UnexpectedSyncStrategy,
     UnsupportedPrimaryKey,
     _const,
     _cur,
@@ -840,6 +841,75 @@ def test_when_rogue_row_inserted_in_tracker_table(
         )
         with pytest.raises(_tracker.InvalidRowInTrackerTable):
             repack.full()
+
+
+def test_registry_table_sync_strategy_upgrade(connection: _psycopg.Connection) -> None:
+    with _cur.get_cursor(connection, logged=True) as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+        )
+        # Create the Registry table with the OLD schema manually.
+        cur.execute(
+            dedent(f"""
+            CREATE TABLE public.{_const.PSYCOPACK_REGISTRY} (
+              original_table VARCHAR(63) NOT NULL UNIQUE,
+              copy_table VARCHAR(63) NOT NULL UNIQUE,
+              id_seq VARCHAR(63) NOT NULL UNIQUE,
+              function VARCHAR(63) NOT NULL UNIQUE,
+              trigger VARCHAR(63) NOT NULL UNIQUE,
+              backfill_log VARCHAR(63) NOT NULL UNIQUE,
+              repacked_name VARCHAR(63) NOT NULL UNIQUE,
+              repacked_function VARCHAR(63) NOT NULL UNIQUE,
+              repacked_trigger VARCHAR(63) NOT NULL UNIQUE
+            );
+        """)
+        )
+
+        # Update is checked upon initialisation.
+        repack = Psycopack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+        )
+        columns = repack.introspector.get_table_columns(table=_const.PSYCOPACK_REGISTRY)
+        assert "sync_strategy" in columns
+        assert "change_log_trigger" in columns
+        assert "change_log" in columns
+        assert "change_log_function" in columns
+        assert "change_log_copy_function" in columns
+
+
+def test_when_user_changes_existing_sync_strategy(
+    connection: _psycopg.Connection,
+) -> None:
+    with _cur.get_cursor(connection, logged=True) as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+        )
+        # Initiate psycopack with 'DIRECT_TRIGGER' strategy - this creates the
+        # Registry table.
+        Psycopack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+            sync_strategy=SyncStrategy.DIRECT_TRIGGER,
+        )
+        with pytest.raises(UnexpectedSyncStrategy):
+            Psycopack(
+                table="to_repack",
+                batch_size=1,
+                conn=connection,
+                cur=cur,
+                sync_strategy=SyncStrategy.CHANGE_LOG,
+            )
 
 
 def test_table_to_repack_deleted_after_pre_validation(
