@@ -2377,7 +2377,6 @@ def test_repack_with_change_log_strategy(
             rows=100,
             pk_type=pk_type,
         )
-        table_before = _collect_table_info(table="to_repack", connection=connection)
         repack = Psycopack(
             table="to_repack",
             batch_size=1,
@@ -2387,6 +2386,64 @@ def test_repack_with_change_log_strategy(
         )
         repack.pre_validate()
         repack.setup_repacking()
+
+        # Insert a row in the table to_repack, to verify the trigger places the
+        # pk of the row being changed in the change log.
+        cur.execute(
+            """
+            INSERT INTO to_repack (
+                var_with_btree,
+                var_with_pattern_ops,
+                int_with_check,
+                int_with_not_valid_check,
+                int_with_long_index_name,
+                var_with_unique_idx,
+                var_with_unique_const,
+                valid_fk,
+                not_valid_fk,
+                to_repack,
+                var_maybe_with_exclusion,
+                var_with_multiple_idx
+            )
+            SELECT
+                substring(md5(random()::text), 1, 10),
+                substring(md5(random()::text), 1, 10),
+                (floor(random() * 10) + 1)::int,
+                (floor(random() * 10) + 1)::int,
+                (floor(random() * 10) + 1)::int,
+                substring(md5(random()::text), 1, 10),
+                substring(md5(random()::text), 1, 10),
+                (floor(random() * 10) + 1)::int,
+                (floor(random() * 10) + 1)::int,
+                (floor(random() * 10) + 1)::int,
+                substring(md5(random()::text), 1, 10),
+                substring(md5(random()::text), 1, 10)
+            FROM generate_series(1, 1);
+        """
+        )
+
+        cur.execute(f"SELECT * FROM {repack.change_log};")
+        # The fixture adds 100 rows, and so the insert above was 101.
+        assert cur.fetchall() == [(1, 101)]
+
+        # Updating the same row doesn't create a new row in the change log
+        # and doesn't err due to the "ON CONFLICT DO NOTHING".
+        cur.execute("UPDATE to_repack SET int_with_check = 42 WHERE id = 101;")
+        cur.execute(f"SELECT * FROM {repack.change_log};")
+        assert cur.fetchall() == [(1, 101)]
+
+        # Unless... It's updating the id itself.
+        cur.execute("UPDATE to_repack SET id = 102 WHERE id = 101;")
+        cur.execute(f"SELECT * FROM {repack.change_log};")
+        assert cur.fetchall() == [(1, 101), (3, 102)]
+
+        # Deleting the row doesn't create a new row in the change log.
+        cur.execute("DELETE FROM to_repack WHERE id = 102;")
+        cur.execute(f"SELECT * FROM {repack.change_log};")
+        assert cur.fetchall() == [(1, 101), (3, 102)]
+
+        table_before = _collect_table_info(table="to_repack", connection=connection)
+
         repack.backfill()
         repack.sync_schemas()
         repack.swap()

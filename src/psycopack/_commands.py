@@ -252,6 +252,182 @@ class Command:
             .as_string(self.conn)
         )
 
+    def create_change_log(self, *, src_table: str, change_log: str) -> None:
+        pk_info = self.introspector.get_primary_key_info(table=src_table)
+
+        # At this point tables without primary-keys or with composite keys have
+        # already been stopped of proceeding as they aren't supported by
+        # Psycopack.
+        assert pk_info is not None
+        assert len(pk_info.columns) == 1
+        assert len(pk_info.data_types) == 1
+
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                CREATE TABLE {schema}.{table} (
+                  id BIGSERIAL PRIMARY KEY,
+                  src_pk {data_type} UNIQUE NOT NULL
+                );
+                """)
+            )
+            .format(
+                table=psycopg.sql.Identifier(change_log),
+                schema=psycopg.sql.Identifier(self.schema),
+                data_type=psycopg.sql.SQL(pk_info.data_types[0]),
+            )
+            .as_string(self.conn)
+        )
+
+    def create_change_log_function(
+        self,
+        *,
+        function: str,
+        table_from: str,
+        table_to: str,
+    ) -> None:
+        # Note: assumes the PK to be an integer-like type that can be
+        # automatically promoted to bigint.
+        # TODO: generalise for other PK types.
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                CREATE OR REPLACE FUNCTION {schema}.{function}(BIGINT)
+                RETURNS VOID AS $$
+
+                  INSERT INTO {schema}.{table_to}
+                  (src_pk) VALUES ($1)
+                  ON CONFLICT DO NOTHING
+
+                $$ LANGUAGE SQL SECURITY DEFINER;
+                """)
+            )
+            .format(
+                function=psycopg.sql.Identifier(function),
+                table_from=psycopg.sql.Identifier(table_from),
+                table_to=psycopg.sql.Identifier(table_to),
+                schema=psycopg.sql.Identifier(self.schema),
+            )
+            .as_string(self.conn)
+        )
+
+    def create_change_log_copy_function(
+        self,
+        *,
+        function: str,
+        table_from: str,
+        table_to: str,
+        change_log: str,
+        columns: list[str],
+        pk_column: str,
+    ) -> None:
+        # Note: assumes the PK to be an integer-like type that can be
+        # automatically promoted to bigint.
+        # TODO: generalise for other PK types.
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                CREATE OR REPLACE FUNCTION {schema}.{function}(VARIADIC pks BIGINT[])
+                RETURNS VOID
+                LANGUAGE plpgsql
+                SECURITY DEFINER
+                AS $$
+                BEGIN
+                  -- Lock source rows
+                  PERFORM 1
+                  FROM {schema}.{table_from}
+                  WHERE {pk_column} = ANY (pks)
+                  FOR UPDATE;
+
+                  -- Lock destination rows
+                  PERFORM 1
+                  FROM {schema}.{table_to}
+                  WHERE {pk_column} = ANY (pks)
+                  FOR UPDATE;
+
+                  -- Lock change log rows
+                  PERFORM 1
+                  FROM {schema}.{change_log}
+                  WHERE src_pk = ANY (pks)
+                  FOR UPDATE;
+
+                  -- Delete destination rows
+                  DELETE FROM {schema}.{table_to}
+                  WHERE {pk_column} = ANY (pks);
+
+                  -- Delete change log rows
+                  DELETE FROM {schema}.{change_log}
+                  WHERE src_pk = ANY (pks);
+
+                  -- Insert from source
+                  INSERT INTO {schema}.{table_to}
+                  OVERRIDING SYSTEM VALUE
+                  SELECT {columns}
+                  FROM {schema}.{table_from}
+                  WHERE {pk_column} = ANY (pks);
+                END;
+                $$;
+                """)
+            )
+            .format(
+                function=psycopg.sql.Identifier(function),
+                table_from=psycopg.sql.Identifier(table_from),
+                table_to=psycopg.sql.Identifier(table_to),
+                change_log=psycopg.sql.Identifier(change_log),
+                schema=psycopg.sql.Identifier(self.schema),
+                columns=psycopg.sql.SQL(",").join(
+                    [psycopg.sql.Identifier(c) for c in columns]
+                ),
+                pk_column=psycopg.sql.Identifier(pk_column),
+            )
+            .as_string(self.conn)
+        )
+
+    def create_change_log_trigger(
+        self,
+        *,
+        trigger_name: str,
+        table_from: str,
+        table_to: str,
+        pk_column: str,
+        function: str,
+    ) -> None:
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                CREATE OR REPLACE FUNCTION {schema}.{trigger_name}()
+                RETURNS TRIGGER AS
+                $$
+                BEGIN
+                  IF ( TG_OP = 'INSERT') THEN
+                    PERFORM {schema}.{function}(NEW.{pk_column});
+                    RETURN NEW;
+                  ELSIF ( TG_OP = 'UPDATE') THEN
+                    PERFORM {schema}.{function}(NEW.{pk_column});
+                    RETURN NEW;
+                  ELSIF ( TG_OP = 'DELETE') THEN
+                    PERFORM {schema}.{function}(OLD.{pk_column});
+                    RETURN OLD;
+                  END IF;
+                END;
+                $$ LANGUAGE PLPGSQL SECURITY DEFINER;
+
+                CREATE TRIGGER {trigger_name}
+                AFTER INSERT OR UPDATE OR DELETE ON {schema}.{table_from}
+                FOR EACH ROW EXECUTE PROCEDURE {schema}.{trigger_name}();
+                """)
+            )
+            .format(
+                trigger_name=psycopg.sql.Identifier(trigger_name),
+                function=psycopg.sql.Identifier(function),
+                table_from=psycopg.sql.Identifier(table_from),
+                table_to=psycopg.sql.Identifier(table_to),
+                pk_column=psycopg.sql.Identifier(pk_column),
+                schema=psycopg.sql.Identifier(self.schema),
+            )
+            .as_string(self.conn)
+        )
+
     @contextmanager
     def session_lock(self, *, name: str) -> Iterator[None]:
         # Based on:
@@ -532,6 +708,22 @@ class Command:
                 batch_start=psycopg.sql.Literal(batch.start),
                 batch_end=psycopg.sql.Literal(batch.end),
                 schema=psycopg.sql.Identifier(self.schema),
+            )
+            .as_string(self.conn)
+        )
+
+    def execute_change_log_copy_function(
+        self,
+        *,
+        function: str,
+        pks: list[int],
+    ) -> None:
+        self.cur.execute(
+            psycopg.sql.SQL("SELECT {schema}.{function}({pks});")
+            .format(
+                function=psycopg.sql.Identifier(function),
+                schema=psycopg.sql.Identifier(self.schema),
+                pks=psycopg.sql.SQL(", ").join(map(psycopg.sql.Literal, pks)),
             )
             .as_string(self.conn)
         )

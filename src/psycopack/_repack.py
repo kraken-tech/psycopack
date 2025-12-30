@@ -196,6 +196,11 @@ class Psycopack:
         self.repacked_name = registry_row.repacked_name
         self.repacked_function = registry_row.repacked_function
         self.repacked_trigger = registry_row.repacked_trigger
+        # Names specific to the CHANGE_LOG strategy
+        self.change_log = registry_row.change_log
+        self.change_log_trigger = registry_row.change_log_trigger
+        self.change_log_function = registry_row.change_log_function
+        self.change_log_copy_function = registry_row.change_log_copy_function
 
         self.tracker = _tracker.Tracker(
             table=self.table,
@@ -370,9 +375,16 @@ class Psycopack:
         ):
             self._create_copy_table()
             self._create_copy_function()
-            self._create_source_to_copy_table_trigger()
             self._create_backfill_log()
             self._populate_backfill_log()
+
+            if self.sync_strategy == _sync_strategy.SyncStrategy.CHANGE_LOG:
+                self._create_change_log()
+                self._create_change_log_function()
+                self._create_change_log_trigger()
+                self._create_change_log_copy_function()
+            elif self.sync_strategy == _sync_strategy.SyncStrategy.DIRECT_TRIGGER:
+                self._create_source_to_copy_table_trigger()
 
     def backfill(self) -> None:
         with self.tracker.track(_tracker.Stage.BACKFILL):
@@ -673,6 +685,51 @@ class Psycopack:
     def _create_backfill_log(self) -> None:
         self.command.drop_table_if_exists(table=self.backfill_log)
         self.command.create_backfill_log(table=self.backfill_log)
+
+    def _create_change_log(self) -> None:
+        assert self.change_log is not None
+        self.command.drop_table_if_exists(table=self.change_log)
+        self.command.create_change_log(src_table=self.table, change_log=self.change_log)
+
+    def _create_change_log_function(self) -> None:
+        assert self.change_log_function is not None
+        assert self.change_log is not None
+
+        self.command.drop_function_if_exists(function=self.change_log_function)
+        self.command.create_change_log_function(
+            function=self.change_log_function,
+            table_from=self.table,
+            table_to=self.change_log,
+        )
+
+    def _create_change_log_copy_function(self) -> None:
+        assert self.change_log_copy_function is not None
+        assert self.change_log is not None
+
+        self.command.drop_function_if_exists(function=self.change_log_copy_function)
+        self.command.create_change_log_copy_function(
+            function=self.change_log_copy_function,
+            table_from=self.table,
+            table_to=self.copy_table,
+            pk_column=self.pk_column,
+            change_log=self.change_log,
+            columns=self.introspector.get_table_columns(table=self.table),
+        )
+
+    def _create_change_log_trigger(self) -> None:
+        assert self.change_log_trigger is not None
+        assert self.change_log_function is not None
+
+        self.command.drop_trigger_if_exists(
+            table=self.table, trigger=self.change_log_trigger
+        )
+        self.command.create_change_log_trigger(
+            trigger_name=self.change_log_trigger,
+            function=self.change_log_function,
+            table_from=self.table,
+            table_to=self.copy_table,
+            pk_column=self.pk_column,
+        )
 
     def _populate_backfill_log(self) -> None:
         # positive pk values
