@@ -4,7 +4,7 @@ from contextlib import contextmanager
 from textwrap import dedent
 from typing import Iterator
 
-from . import _commands, _const, _cur, _introspect
+from . import _commands, _const, _cur, _introspect, _sync_strategy
 from . import _psycopg as psycopg
 
 
@@ -59,8 +59,9 @@ class Stage(enum.Enum):
     SETUP = StageInfo(name="SETUP", step=2)
     BACKFILL = StageInfo(name="BACKFILL", step=3)
     SYNC_SCHEMAS = StageInfo(name="SYNC_SCHEMAS", step=4)
-    SWAP = StageInfo(name="SWAP", step=5)
-    CLEAN_UP = StageInfo(name="CLEAN_UP", step=6)
+    POST_SYNC_UPDATE = StageInfo(name="POST_SYNC_UPDATE", step=5)
+    SWAP = StageInfo(name="SWAP", step=6)
+    CLEAN_UP = StageInfo(name="CLEAN_UP", step=7)
 
 
 class Tracker:
@@ -87,6 +88,9 @@ class Tracker:
         backfill_log: str,
         repacked_name: str,
         repacked_trigger: str,
+        change_log: str | None,
+        change_log_trigger: str | None,
+        sync_strategy: _sync_strategy.SyncStrategy,
         introspector: _introspect.Introspector,
         command: _commands.Command,
         schema: str,
@@ -103,6 +107,9 @@ class Tracker:
         self.backfill_log = backfill_log
         self.repacked_name = repacked_name
         self.repacked_trigger = repacked_trigger
+        self.change_log = change_log
+        self.change_log_trigger = change_log_trigger
+        self.sync_strategy = sync_strategy
 
         self.tracker_table = self._get_tracker_table_name()
         self.tracker_lock = f"{self.tracker_table}_lock"
@@ -170,23 +177,55 @@ class Tracker:
         deleting a table or a trigger that needs to be used by the passed in
         stage.
         """
-        table_dependencies = {
-            Stage.SETUP: [self.table],
-            Stage.BACKFILL: [self.table, self.copy_table, self.backfill_log],
-            Stage.SYNC_SCHEMAS: [self.table, self.copy_table],
-            Stage.SWAP: [self.table, self.copy_table],
-            Stage.CLEAN_UP: [self.repacked_name, self.table],
-        }
+        if self.sync_strategy == _sync_strategy.SyncStrategy.DIRECT_TRIGGER:
+            table_dependencies = {
+                Stage.SETUP: [self.table],
+                Stage.BACKFILL: [self.table, self.copy_table, self.backfill_log],
+                Stage.SYNC_SCHEMAS: [self.table, self.copy_table],
+                Stage.POST_SYNC_UPDATE: [self.table, self.copy_table],
+                Stage.SWAP: [self.table, self.copy_table],
+                Stage.CLEAN_UP: [self.repacked_name, self.table],
+            }
+        elif self.sync_strategy == _sync_strategy.SyncStrategy.CHANGE_LOG:
+            assert self.change_log is not None
+            table_dependencies = {
+                Stage.SETUP: [self.table],
+                Stage.BACKFILL: [
+                    self.table,
+                    self.copy_table,
+                    self.backfill_log,
+                    self.change_log,
+                ],
+                Stage.SYNC_SCHEMAS: [self.table, self.copy_table, self.change_log],
+                Stage.POST_SYNC_UPDATE: [self.table, self.copy_table, self.change_log],
+                Stage.SWAP: [self.table, self.copy_table],
+                Stage.CLEAN_UP: [self.repacked_name, self.table],
+            }
+        else:
+            raise NotImplementedError
+
         if stage in table_dependencies:
             for table in table_dependencies[stage]:
                 self._validate_table_exists(table=table, stage=stage)
 
-        trigger_dependencies = {
-            Stage.BACKFILL: [self.trigger],
-            Stage.SYNC_SCHEMAS: [self.trigger],
-            Stage.SWAP: [self.trigger],
-            Stage.CLEAN_UP: [self.repacked_trigger],
-        }
+        if self.sync_strategy == _sync_strategy.SyncStrategy.DIRECT_TRIGGER:
+            trigger_dependencies = {
+                Stage.BACKFILL: [self.trigger],
+                Stage.SYNC_SCHEMAS: [self.trigger],
+                Stage.SWAP: [self.trigger],
+                Stage.CLEAN_UP: [self.repacked_trigger],
+            }
+        elif self.sync_strategy == _sync_strategy.SyncStrategy.CHANGE_LOG:
+            assert self.change_log_trigger is not None
+            trigger_dependencies = {
+                Stage.BACKFILL: [self.change_log_trigger],
+                Stage.SYNC_SCHEMAS: [self.change_log_trigger],
+                Stage.SWAP: [self.trigger],
+                Stage.CLEAN_UP: [self.repacked_trigger],
+            }
+        else:
+            raise NotImplementedError
+
         if stage in trigger_dependencies:
             for trigger in trigger_dependencies[stage]:
                 self._validate_trigger_exists(trigger=trigger, stage=stage)
@@ -203,6 +242,9 @@ class Tracker:
                 self._set_stage(stage_from=stage, stage_to=Stage.SYNC_SCHEMAS)
                 return
             case Stage.SYNC_SCHEMAS:
+                self._set_stage(stage_from=stage, stage_to=Stage.POST_SYNC_UPDATE)
+                return
+            case Stage.POST_SYNC_UPDATE:
                 self._set_stage(stage_from=stage, stage_to=Stage.SWAP)
                 return
             case Stage.SWAP:

@@ -533,8 +533,8 @@ def test_repack_full_after_sync_schemas_called(connection: _psycopg.Connection) 
         repack.setup_repacking()
         repack.backfill()
         repack.sync_schemas()
-        # Sync schemas finished. Next stage is swap.
-        assert repack.tracker.get_current_stage() == _tracker.Stage.SWAP
+        # Sync schemas finished. Next stage is post sync update.
+        assert repack.tracker.get_current_stage() == _tracker.Stage.POST_SYNC_UPDATE
         repack.full()
         table_after = _collect_table_info(table="to_repack", connection=connection)
         _assert_repack(
@@ -572,6 +572,7 @@ def test_repack_full_after_swap_called(connection: _psycopg.Connection) -> None:
         repack.setup_repacking()
         repack.backfill()
         repack.sync_schemas()
+        repack.post_sync_update()
         repack.swap()
         # Swap finished. Next stage is clean up.
         assert repack.tracker.get_current_stage() == _tracker.Stage.CLEAN_UP
@@ -608,6 +609,7 @@ def test_clean_up_finishes_the_repacking(connection: _psycopg.Connection) -> Non
         repack.setup_repacking()
         repack.backfill()
         repack.sync_schemas()
+        repack.post_sync_update()
         repack.swap()
         repack.clean_up()
         table_after = _collect_table_info(table="to_repack", connection=connection)
@@ -743,7 +745,7 @@ def test_when_tracker_removed_after_sync_schemas(
         repack.setup_repacking()
         repack.backfill()
         repack.sync_schemas()
-        assert repack.tracker.get_current_stage() == _tracker.Stage.SWAP
+        assert repack.tracker.get_current_stage() == _tracker.Stage.POST_SYNC_UPDATE
 
         # Deleting the tracker table will remove the ability to pick up the
         # repacking process where it left. But nonetheless, it should resume
@@ -993,6 +995,10 @@ def test_cannot_repeat_finished_stage(connection: _psycopg.Connection) -> None:
         with pytest.raises(_tracker.StageAlreadyFinished):
             repack.sync_schemas()
 
+        repack.post_sync_update()
+        with pytest.raises(_tracker.StageAlreadyFinished):
+            repack.post_sync_update()
+
         repack.swap()
         with pytest.raises(_tracker.StageAlreadyFinished):
             repack.swap()
@@ -1054,7 +1060,12 @@ def test_cannot_skip_order_of_stages(connection: _psycopg.Connection) -> None:
 
         repack.sync_schemas()
         with pytest.raises(_tracker.InvalidPsycopackStep):
-            # Can't go to clean up without swapping first.
+            # Can't go to swap without post sync update.
+            repack.swap()
+
+        repack.post_sync_update()
+        with pytest.raises(_tracker.InvalidPsycopackStep):
+            # Can't go to clean up without swap.
             repack.clean_up()
 
         repack.swap()
@@ -1099,6 +1110,7 @@ def test_revert_swap_after_swap_called(
         repack.setup_repacking()
         repack.backfill()
         repack.sync_schemas()
+        repack.post_sync_update()
 
         repack.swap()
         # After the swap, repacking is ready for the clean-up stage.
@@ -1504,6 +1516,8 @@ def test_with_writes_when_table_has_negative_pk_values(
         _do_writes(table="to_repack", cur=cur, check_table=repack.copy_table)
         repack.sync_schemas()
         _do_writes(table="to_repack", cur=cur, check_table=repack.copy_table)
+        repack.post_sync_update()
+        _do_writes(table="to_repack", cur=cur, check_table=repack.copy_table)
         repack.swap()
         _do_writes(table="to_repack", cur=cur, check_table=repack.repacked_name)
         repack.clean_up()
@@ -1724,6 +1738,10 @@ def test_repeat_stage_when_lock_timeout(connection: _psycopg.Connection) -> None
         # reentrant.
         repack.sync_schemas()
 
+        # It can be called again successfully as the function is idempotent and
+        # reentrant.
+        repack.post_sync_update()
+
         # Swapping also has many DDLs that may time out as it is moving the
         # tables around.
         with mock.patch.object(repack.command, "rename_table") as mocked:
@@ -1814,11 +1832,21 @@ def test_reset(connection: _psycopg.Connection) -> None:
         repack.reset()
         _assert_reset(repack, cur)
 
+        # Resetting after post_sync_update
+        repack.pre_validate()
+        repack.setup_repacking()
+        repack.backfill()
+        repack.sync_schemas()
+        repack.post_sync_update()
+        repack.reset()
+        _assert_reset(repack, cur)
+
         # Resetting after swap results in error
         repack.pre_validate()
         repack.setup_repacking()
         repack.backfill()
         repack.sync_schemas()
+        repack.post_sync_update()
         repack.swap()
         with pytest.raises(InvalidStageForReset, match="reset from the CLEAN_UP stage"):
             repack.reset()
@@ -1834,6 +1862,7 @@ def test_reset(connection: _psycopg.Connection) -> None:
         repack.setup_repacking()
         repack.backfill()
         repack.sync_schemas()
+        repack.post_sync_update()
         repack.swap()
         repack.clean_up()
 
@@ -1901,6 +1930,7 @@ def test_with_non_default_schema(connection: _psycopg.Connection) -> None:
         repack.setup_repacking()
         repack.backfill()
         repack.sync_schemas()
+        repack.post_sync_update()
         repack.swap()
         repack.revert_swap()
         repack.swap()
@@ -2280,6 +2310,7 @@ def test_when_repack_is_reinstantiated_after_swapping(
         repack.setup_repacking()
         repack.backfill()
         repack.sync_schemas()
+        repack.post_sync_update()
         repack.swap()
 
         # Re-instantiate to trigger the edge-case
@@ -2446,6 +2477,7 @@ def test_repack_with_change_log_strategy(
 
         repack.backfill()
         repack.sync_schemas()
+        repack.post_sync_update()
         repack.swap()
         repack.clean_up()
         table_after = _collect_table_info(table="to_repack", connection=connection)

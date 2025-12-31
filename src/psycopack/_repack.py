@@ -211,6 +211,9 @@ class Psycopack:
             backfill_log=self.backfill_log,
             repacked_name=self.repacked_name,
             repacked_trigger=self.repacked_trigger,
+            change_log=self.change_log,
+            change_log_trigger=self.change_log_trigger,
+            sync_strategy=self.sync_strategy,
             introspector=self.introspector,
             command=self.command,
             schema=schema,
@@ -241,6 +244,7 @@ class Psycopack:
             self.setup_repacking()
             self.backfill()
             self.sync_schemas()
+            self.post_sync_update()
             self.swap()
             self.clean_up()
 
@@ -248,17 +252,25 @@ class Psycopack:
             self.setup_repacking()
             self.backfill()
             self.sync_schemas()
+            self.post_sync_update()
             self.swap()
             self.clean_up()
 
         if stage == _tracker.Stage.BACKFILL:
             self.backfill()
             self.sync_schemas()
+            self.post_sync_update()
             self.swap()
             self.clean_up()
 
         if stage == _tracker.Stage.SYNC_SCHEMAS:
             self.sync_schemas()
+            self.post_sync_update()
+            self.swap()
+            self.clean_up()
+
+        if stage == _tracker.Stage.POST_SYNC_UPDATE:
+            self.post_sync_update()
             self.swap()
             self.clean_up()
 
@@ -398,6 +410,11 @@ class Psycopack:
                 self._create_check_and_fk_constraints()
                 self._create_referring_fks()
                 self.command.analyze(table=self.table)
+
+    def post_sync_update(self) -> None:
+        with self.tracker.track(_tracker.Stage.POST_SYNC_UPDATE):
+            # Do nothing for now.
+            return
 
     def swap(self) -> None:
         """
