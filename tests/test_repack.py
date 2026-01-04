@@ -2414,13 +2414,12 @@ def test_repack_with_change_log_strategy(
             conn=connection,
             cur=cur,
             sync_strategy=SyncStrategy.CHANGE_LOG,
+            change_log_batch_size=10,
         )
         repack.pre_validate()
         repack.setup_repacking()
 
-        # Insert a row in the table to_repack, to verify the trigger places the
-        # pk of the row being changed in the change log.
-        cur.execute(
+        create_row_sql = dedent(
             """
             INSERT INTO to_repack (
                 var_with_btree,
@@ -2449,9 +2448,16 @@ def test_repack_with_change_log_strategy(
                 (floor(random() * 10) + 1)::int,
                 substring(md5(random()::text), 1, 10),
                 substring(md5(random()::text), 1, 10)
-            FROM generate_series(1, 1);
+            FROM
+              generate_series(1, 1)
+            RETURNING
+              id
+            ;
         """
         )
+        # Insert a row in the table to_repack, to verify the trigger places the
+        # pk of the row being changed in the change log.
+        cur.execute(create_row_sql)
 
         cur.execute(f"SELECT * FROM {repack.change_log};")
         # The fixture adds 100 rows, and so the insert above was 101.
@@ -2464,20 +2470,55 @@ def test_repack_with_change_log_strategy(
         assert cur.fetchall() == [(1, 101)]
 
         # Unless... It's updating the id itself.
-        cur.execute("UPDATE to_repack SET id = 102 WHERE id = 101;")
+        # The older id still remains in the table, however. Given that the copy
+        # function is idempotent, this doesn't matter. But it additionally
+        # covers for the corner case where the id is inserted again.
+        cur.execute("UPDATE to_repack SET id = 9999 WHERE id = 101;")
         cur.execute(f"SELECT * FROM {repack.change_log};")
-        assert cur.fetchall() == [(1, 101), (3, 102)]
+        assert cur.fetchall() == [(1, 101), (3, 9999)]
 
         # Deleting the row doesn't create a new row in the change log.
-        cur.execute("DELETE FROM to_repack WHERE id = 102;")
+        cur.execute("DELETE FROM to_repack WHERE id = 9999;")
         cur.execute(f"SELECT * FROM {repack.change_log};")
-        assert cur.fetchall() == [(1, 101), (3, 102)]
+        assert cur.fetchall() == [(1, 101), (3, 9999)]
+        repack.backfill()
+
+        # Create a row post-backfill, this row shouldn't be in the copy table
+        # yet as it didn't exist prior to the backfill process.
+        cur.execute(create_row_sql)
+        row = cur.fetchone()
+        assert row is not None
+        created_row_id = row[0]
+        assert created_row_id == 102
+        cur.execute(
+            f"SELECT count(*) FROM {repack.copy_table} WHERE id = {created_row_id};"
+        )
+        row = cur.fetchone()
+        assert row is not None
+        assert row[0] == 0
+
+        # But it is in the change log.
+        cur.execute(f"SELECT * FROM {repack.change_log};")
+        assert cur.fetchall() == [(1, 101), (3, 9999), (5, 102)]
+
+        repack.sync_schemas()
+
+        # Before the post sync-update, there must be three rows in the change
+        # log (id 101, 102, 9999).
+        cur.execute(f"SELECT COUNT(*) FROM {repack.change_log};")
+        row = cur.fetchone()
+        assert row is not None
+        assert row[0] == 3
+
+        repack.post_sync_update()
+
+        # Change log rows have been deleted.
+        cur.execute(f"SELECT COUNT(*) FROM {repack.change_log};")
+        row = cur.fetchone()
+        assert row is not None
+        assert row[0] == 0
 
         table_before = _collect_table_info(table="to_repack", connection=connection)
-
-        repack.backfill()
-        repack.sync_schemas()
-        repack.post_sync_update()
         repack.swap()
         repack.clean_up()
         table_after = _collect_table_info(table="to_repack", connection=connection)

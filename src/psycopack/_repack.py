@@ -148,6 +148,7 @@ class Psycopack:
         allow_empty: bool = False,
         skip_permissions_check: bool = False,
         sync_strategy: _sync_strategy.SyncStrategy = _sync_strategy.SyncStrategy.DIRECT_TRIGGER,
+        change_log_batch_size: int | None = None,
     ) -> None:
         self.conn = conn
         self.cur = cur
@@ -201,6 +202,7 @@ class Psycopack:
         self.change_log_trigger = registry_row.change_log_trigger
         self.change_log_function = registry_row.change_log_function
         self.change_log_copy_function = registry_row.change_log_copy_function
+        self.change_log_batch_size = change_log_batch_size
 
         self.tracker = _tracker.Tracker(
             table=self.table,
@@ -413,8 +415,32 @@ class Psycopack:
 
     def post_sync_update(self) -> None:
         with self.tracker.track(_tracker.Stage.POST_SYNC_UPDATE):
-            # Do nothing for now.
-            return
+            if self.sync_strategy == _sync_strategy.SyncStrategy.DIRECT_TRIGGER:
+                return
+            elif self.sync_strategy == _sync_strategy.SyncStrategy.CHANGE_LOG:
+                return self._post_sync_update_for_change_log()
+            else:
+                raise NotImplementedError
+
+    def _post_sync_update_for_change_log(self) -> None:
+        assert self.change_log is not None
+        assert self.change_log_batch_size is not None
+        assert self.change_log_copy_function is not None
+
+        while True:
+            with self.command.db_transaction():
+                change_log_batch = self.introspector.get_change_log_batch(
+                    table=self.change_log,
+                    batch_size=self.change_log_batch_size,
+                )
+                if not change_log_batch:
+                    # No batches available to process at present.
+                    break
+
+                self.command.execute_change_log_copy_function(
+                    function=self.change_log_copy_function,
+                    pks=[change.src_pk for change in change_log_batch],
+                )
 
     def swap(self) -> None:
         """
