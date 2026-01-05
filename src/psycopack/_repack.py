@@ -413,6 +413,29 @@ class Psycopack:
                 self._create_referring_fks()
                 self.command.analyze(table=self.table)
 
+                if self.sync_strategy == _sync_strategy.SyncStrategy.CHANGE_LOG:
+                    # Schema is synced. Rely on the src-to-copy trigger from
+                    # now on and remove the change log trigger to avoid making
+                    # the change log grow indefinetely.
+                    with self.command.db_transaction():
+                        self.command.acquire_access_exclusive_lock(table=self.table)
+                        self.command.acquire_access_exclusive_lock(
+                            table=self.copy_table
+                        )
+                        assert self.change_log is not None
+                        self.command.acquire_access_exclusive_lock(
+                            table=self.change_log
+                        )
+                        self._create_source_to_copy_table_trigger()
+                        assert self.change_log_trigger is not None
+                        self.command.drop_trigger_if_exists(
+                            table=self.table, trigger=self.change_log_trigger
+                        )
+                        assert self.change_log_function is not None
+                        self.command.drop_function_if_exists(
+                            function=self.change_log_function
+                        )
+
     def post_sync_update(self) -> None:
         with self.tracker.track(_tracker.Stage.POST_SYNC_UPDATE):
             if self.sync_strategy == _sync_strategy.SyncStrategy.DIRECT_TRIGGER:

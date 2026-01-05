@@ -2501,7 +2501,33 @@ def test_repack_with_change_log_strategy(
         cur.execute(f"SELECT * FROM {repack.change_log};")
         assert cur.fetchall() == [(1, 101), (3, 9999), (5, 102)]
 
+        # Before syncing the schema, the src-to-copy trigger doesn't exist.
+        # But the change log trigger and function exist.
+        cur.execute(f"SELECT 1 FROM pg_trigger WHERE tgname = '{repack.trigger}'")
+        assert cur.fetchone() is None
+        cur.execute(
+            f"SELECT 1 FROM pg_proc WHERE proname = '{repack.change_log_function}'"
+        )
+        assert cur.fetchone() is not None
+        cur.execute(
+            f"SELECT 1 FROM pg_trigger WHERE tgname = '{repack.change_log_trigger}'"
+        )
+        assert cur.fetchone() is not None
+
         repack.sync_schemas()
+
+        # After syncing the schema, the src-to-copy trigger exists.
+        # But the change log trigger and function don't exist.
+        cur.execute(f"SELECT 1 FROM pg_trigger WHERE tgname = '{repack.trigger}'")
+        assert cur.fetchone() is not None
+        cur.execute(
+            f"SELECT 1 FROM pg_proc WHERE proname = '{repack.change_log_function}'"
+        )
+        assert cur.fetchone() is None
+        cur.execute(
+            f"SELECT 1 FROM pg_trigger WHERE tgname = '{repack.change_log_trigger}'"
+        )
+        assert cur.fetchone() is None
 
         # Before the post sync-update, there must be three rows in the change
         # log (id 101, 102, 9999).
