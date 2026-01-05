@@ -632,6 +632,13 @@ class Psycopack:
                 self.command.drop_table_if_exists(table=self.backfill_log)
                 self.registry.delete_row_for(table=self.table)
 
+                if self.sync_strategy == _sync_strategy.SyncStrategy.CHANGE_LOG:
+                    # The change log trigger and function have already been
+                    # dropped during the schema sync stage. The table is the
+                    # only artefact remaining.
+                    assert self.change_log is not None
+                    self.command.drop_table_if_exists(table=self.change_log)
+
     def reset(self) -> None:
         current_stage = self.tracker.get_current_stage()
         if current_stage == _tracker.Stage.PRE_VALIDATION:

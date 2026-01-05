@@ -2546,7 +2546,16 @@ def test_repack_with_change_log_strategy(
 
         table_before = _collect_table_info(table="to_repack", connection=connection)
         repack.swap()
+
+        # Before the clean-up, the change_log table is still there.
+        assert repack.change_log is not None
+        repack.introspector.get_table_oid(table=repack.change_log)
+
         repack.clean_up()
+
+        # After the clean-up, the change_log table has been deleted.
+        repack.introspector.get_table_oid(table=repack.change_log)
+
         table_after = _collect_table_info(table="to_repack", connection=connection)
         _assert_repack(
             table_before=table_before,
