@@ -84,6 +84,7 @@ def _collect_table_info(
 class _TriggerInfo:
     trigger_exists: bool
     repacked_trigger_exists: bool
+    change_log_trigger_exists: bool
 
 
 def _get_trigger_info(repack: Psycopack, cur: _cur.Cursor) -> _TriggerInfo:
@@ -91,8 +92,19 @@ def _get_trigger_info(repack: Psycopack, cur: _cur.Cursor) -> _TriggerInfo:
     trigger_exists = cur.fetchone() is not None
     cur.execute(f"SELECT 1 FROM pg_trigger WHERE tgname = '{repack.repacked_trigger}'")
     repacked_trigger_exists = cur.fetchone() is not None
+    if repack.change_log is not None:
+        cur.execute(
+            f"SELECT 1 FROM pg_trigger WHERE tgname = '{repack.change_log_trigger}'"
+        )
+        change_log_trigger_exists = cur.fetchone() is not None
+    else:
+        change_log_trigger_exists = False
+
+    repacked_trigger_exists = cur.fetchone() is not None
     return _TriggerInfo(
-        trigger_exists=trigger_exists, repacked_trigger_exists=repacked_trigger_exists
+        trigger_exists=trigger_exists,
+        repacked_trigger_exists=repacked_trigger_exists,
+        change_log_trigger_exists=change_log_trigger_exists,
     )
 
 
@@ -100,6 +112,7 @@ def _get_trigger_info(repack: Psycopack, cur: _cur.Cursor) -> _TriggerInfo:
 class _FunctionInfo:
     function_exists: bool
     repacked_function_exists: bool
+    change_log_function_exists: bool
 
 
 def _get_function_info(repack: Psycopack, cur: _cur.Cursor) -> _FunctionInfo:
@@ -107,9 +120,17 @@ def _get_function_info(repack: Psycopack, cur: _cur.Cursor) -> _FunctionInfo:
     function_exists = cur.fetchone() is not None
     cur.execute(f"SELECT 1 FROM pg_proc WHERE proname = '{repack.repacked_function}'")
     repacked_function_exists = cur.fetchone() is not None
+    if repack.change_log_function is not None:
+        cur.execute(
+            f"SELECT 1 FROM pg_proc WHERE proname = '{repack.change_log_function}'"
+        )
+        change_log_function_exists = cur.fetchone() is not None
+    else:
+        change_log_function_exists = False
     return _FunctionInfo(
         function_exists=function_exists,
         repacked_function_exists=repacked_function_exists,
+        change_log_function_exists=change_log_function_exists,
     )
 
 
@@ -162,11 +183,20 @@ def _assert_repack(
 
 
 def _assert_reset(repack: Psycopack, cur: _cur.Cursor) -> None:
-    assert _get_trigger_info(repack, cur).trigger_exists is False
-    assert _get_function_info(repack, cur).function_exists is False
+    trigger_info = _get_trigger_info(repack, cur)
+    assert trigger_info.trigger_exists is False
+
+    function_info = _get_function_info(repack, cur)
+    assert function_info.function_exists is False
     assert _get_sequence_info(repack, cur).sequence_exists is False
     assert repack.introspector.get_table_oid(table=repack.copy_table) is None
     assert repack.introspector.get_table_oid(table=repack.tracker.tracker_table) is None
+
+    if repack.sync_strategy == SyncStrategy.CHANGE_LOG:
+        assert trigger_info.change_log_trigger_exists is False
+        assert function_info.change_log_function_exists is False
+        assert repack.change_log is not None
+        assert repack.introspector.get_table_oid(table=repack.change_log) is None
 
 
 def _do_writes(
@@ -1787,7 +1817,11 @@ def test_repeat_stage_when_lock_timeout(connection: _psycopg.Connection) -> None
         )
 
 
-def test_reset(connection: _psycopg.Connection) -> None:
+@pytest.mark.parametrize(
+    "sync_strategy",
+    [SyncStrategy.DIRECT_TRIGGER, SyncStrategy.CHANGE_LOG],
+)
+def test_reset(connection: _psycopg.Connection, sync_strategy: SyncStrategy) -> None:
     with _cur.get_cursor(connection, logged=True) as cur:
         factories.create_table_for_repacking(
             connection=connection,
@@ -1796,12 +1830,18 @@ def test_reset(connection: _psycopg.Connection) -> None:
             rows=100,
         )
         table_before = _collect_table_info(table="to_repack", connection=connection)
+
         repack = Psycopack(
             table="to_repack",
             batch_size=1,
             conn=connection,
             cur=cur,
+            sync_strategy=sync_strategy,
+            change_log_batch_size=10
+            if sync_strategy == SyncStrategy.CHANGE_LOG
+            else None,
         )
+
         # Psycopack hasn't run yet, no reason to reset.
         with pytest.raises(InvalidStageForReset, match="Psycopack hasn't run yet"):
             repack.reset()

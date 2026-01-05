@@ -667,6 +667,18 @@ class Psycopack:
             self.command.drop_sequence_if_exists(seq=self.id_seq)
             self.command.drop_table_if_exists(table=self.tracker.tracker_table)
 
+            if self.sync_strategy == _sync_strategy.SyncStrategy.CHANGE_LOG:
+                # Drop all remaining artefacts associated with the change log
+                # table.
+                assert self.change_log is not None
+                assert self.change_log_trigger is not None
+                assert self.change_log_function is not None
+                self.command.drop_table_if_exists(table=self.change_log)
+                self.command.drop_trigger_if_exists(
+                    table=self.table, trigger=self.change_log_trigger
+                )
+                self.command.drop_function_if_exists(function=self.change_log_function)
+
     def _create_copy_table(self) -> None:
         # Checks if other relating objects have FKs pointing to the copy table
         # first. Deletes them (if any) as they might have been created by a
