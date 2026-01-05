@@ -406,7 +406,11 @@ class Psycopack:
 
     def sync_schemas(self) -> None:
         with self.tracker.track(_tracker.Stage.SYNC_SCHEMAS):
-            self._create_indexes()
+            self._create_indexes(
+                concurrently=bool(
+                    self.sync_strategy != _sync_strategy.SyncStrategy.CHANGE_LOG
+                )
+            )
             with self.command.lock_timeout(self.lock_timeout):
                 self._create_unique_constraints()
                 self._create_check_and_fk_constraints()
@@ -843,7 +847,7 @@ class Psycopack:
             if self.post_backfill_batch_callback:
                 self.post_backfill_batch_callback(batch)
 
-    def _create_indexes(self) -> None:
+    def _create_indexes(self, concurrently: bool) -> None:
         # Start by checking if there are any invalid indexes already created
         # due to a previous Psycopack run that failed midway through and delete
         # them. This excludes the primary index and exclusion constraints which
@@ -872,13 +876,24 @@ class Psycopack:
             for index in indexes:
                 name = index.name
                 sql = index.definition
-                sql = sql.replace(
-                    "CREATE INDEX", "CREATE INDEX CONCURRENTLY IF NOT EXISTS"
-                )
-                sql = sql.replace(
-                    "CREATE UNIQUE INDEX",
-                    "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS",
-                )
+                if concurrently:
+                    sql = sql.replace(
+                        "CREATE INDEX", "CREATE INDEX CONCURRENTLY IF NOT EXISTS"
+                    )
+                else:
+                    sql = sql.replace("CREATE INDEX", "CREATE INDEX IF NOT EXISTS")
+
+                if concurrently:
+                    sql = sql.replace(
+                        "CREATE UNIQUE INDEX",
+                        "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS",
+                    )
+                else:
+                    sql = sql.replace(
+                        "CREATE UNIQUE INDEX",
+                        "CREATE UNIQUE INDEX IF NOT EXISTS",
+                    )
+
                 sql_arr = sql.split(" ON")
                 new_name = _identifiers.build_postgres_identifier([name], "psycopack")
                 sql_arr[0] = sql_arr[0].replace(name, new_name)
