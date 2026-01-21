@@ -61,6 +61,12 @@ class BackfillBatch:
     end: int
 
 
+@dataclasses.dataclass
+class ChangeLogEntry:
+    id: int
+    src_pk: int
+
+
 class Introspector:
     def __init__(
         self, *, conn: psycopg.Connection, cur: _cur.Cursor, schema: str
@@ -671,6 +677,38 @@ class Introspector:
         if not (result := self.cur.fetchone()):
             return None
         return BackfillBatch(id=result[0], start=result[1], end=result[2])
+
+    def get_change_log_batch(
+        self, *, table: str, batch_size: int
+    ) -> list[ChangeLogEntry] | None:
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                SELECT
+                  id,
+                  src_pk
+                FROM
+                  {schema}.{table}
+                FOR UPDATE SKIP LOCKED
+                LIMIT {batch_size};
+                """)
+            )
+            .format(
+                table=psycopg.sql.Identifier(table),
+                batch_size=psycopg.sql.Literal(batch_size),
+                schema=psycopg.sql.Identifier(self.schema),
+            )
+            .as_string(self.conn)
+        )
+        if not (results := self.cur.fetchall()):
+            return None
+        return [
+            ChangeLogEntry(
+                id=id,
+                src_pk=src_pk,
+            )
+            for id, src_pk in results
+        ]
 
     def get_user(self) -> str:
         self.cur.execute(psycopg.sql.SQL("SELECT current_user;").as_string(self.conn))

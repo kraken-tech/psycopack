@@ -7,7 +7,15 @@ import datetime
 import typing
 from collections import defaultdict
 
-from . import _commands, _cur, _identifiers, _introspect, _registry, _tracker
+from . import (
+    _commands,
+    _cur,
+    _identifiers,
+    _introspect,
+    _registry,
+    _sync_strategy,
+    _tracker,
+)
 from . import _psycopg as psycopg
 
 
@@ -139,6 +147,8 @@ class Psycopack:
         schema: str = "public",
         allow_empty: bool = False,
         skip_permissions_check: bool = False,
+        sync_strategy: _sync_strategy.SyncStrategy = _sync_strategy.SyncStrategy.DIRECT_TRIGGER,
+        change_log_batch_size: int | None = None,
     ) -> None:
         self.conn = conn
         self.cur = cur
@@ -165,6 +175,7 @@ class Psycopack:
         self.lock_timeout = lock_timeout
         self.convert_pk_to_bigint = convert_pk_to_bigint
         self.allow_empty = allow_empty
+        self.sync_strategy = sync_strategy
 
         # Names for psycopack objects are stored in the Registry
         self.registry = _registry.Registry(
@@ -174,6 +185,7 @@ class Psycopack:
             introspector=self.introspector,
             command=self.command,
             table=table,
+            sync_strategy=sync_strategy,
         )
         registry_row = self.registry.get_registry_row()
         self.copy_table = registry_row.copy_table
@@ -185,6 +197,12 @@ class Psycopack:
         self.repacked_name = registry_row.repacked_name
         self.repacked_function = registry_row.repacked_function
         self.repacked_trigger = registry_row.repacked_trigger
+        # Names specific to the CHANGE_LOG strategy
+        self.change_log = registry_row.change_log
+        self.change_log_trigger = registry_row.change_log_trigger
+        self.change_log_function = registry_row.change_log_function
+        self.change_log_copy_function = registry_row.change_log_copy_function
+        self.change_log_batch_size = change_log_batch_size
 
         self.tracker = _tracker.Tracker(
             table=self.table,
@@ -195,6 +213,9 @@ class Psycopack:
             backfill_log=self.backfill_log,
             repacked_name=self.repacked_name,
             repacked_trigger=self.repacked_trigger,
+            change_log=self.change_log,
+            change_log_trigger=self.change_log_trigger,
+            sync_strategy=self.sync_strategy,
             introspector=self.introspector,
             command=self.command,
             schema=schema,
@@ -225,6 +246,7 @@ class Psycopack:
             self.setup_repacking()
             self.backfill()
             self.sync_schemas()
+            self.post_sync_update()
             self.swap()
             self.clean_up()
 
@@ -232,17 +254,25 @@ class Psycopack:
             self.setup_repacking()
             self.backfill()
             self.sync_schemas()
+            self.post_sync_update()
             self.swap()
             self.clean_up()
 
         if stage == _tracker.Stage.BACKFILL:
             self.backfill()
             self.sync_schemas()
+            self.post_sync_update()
             self.swap()
             self.clean_up()
 
         if stage == _tracker.Stage.SYNC_SCHEMAS:
             self.sync_schemas()
+            self.post_sync_update()
+            self.swap()
+            self.clean_up()
+
+        if stage == _tracker.Stage.POST_SYNC_UPDATE:
+            self.post_sync_update()
             self.swap()
             self.clean_up()
 
@@ -359,9 +389,16 @@ class Psycopack:
         ):
             self._create_copy_table()
             self._create_copy_function()
-            self._create_copy_trigger()
             self._create_backfill_log()
             self._populate_backfill_log()
+
+            if self.sync_strategy == _sync_strategy.SyncStrategy.CHANGE_LOG:
+                self._create_change_log()
+                self._create_change_log_function()
+                self._create_change_log_trigger()
+                self._create_change_log_copy_function()
+            elif self.sync_strategy == _sync_strategy.SyncStrategy.DIRECT_TRIGGER:
+                self._create_source_to_copy_table_trigger()
 
     def backfill(self) -> None:
         with self.tracker.track(_tracker.Stage.BACKFILL):
@@ -369,12 +406,68 @@ class Psycopack:
 
     def sync_schemas(self) -> None:
         with self.tracker.track(_tracker.Stage.SYNC_SCHEMAS):
-            self._create_indexes()
+            self._create_indexes(
+                concurrently=bool(
+                    self.sync_strategy != _sync_strategy.SyncStrategy.CHANGE_LOG
+                )
+            )
             with self.command.lock_timeout(self.lock_timeout):
                 self._create_unique_constraints()
                 self._create_check_and_fk_constraints()
                 self._create_referring_fks()
                 self.command.analyze(table=self.table)
+
+                if self.sync_strategy == _sync_strategy.SyncStrategy.CHANGE_LOG:
+                    # Schema is synced. Rely on the src-to-copy trigger from
+                    # now on and remove the change log trigger to avoid making
+                    # the change log grow indefinetely.
+                    with self.command.db_transaction():
+                        self.command.acquire_access_exclusive_lock(table=self.table)
+                        self.command.acquire_access_exclusive_lock(
+                            table=self.copy_table
+                        )
+                        assert self.change_log is not None
+                        self.command.acquire_access_exclusive_lock(
+                            table=self.change_log
+                        )
+                        self._create_source_to_copy_table_trigger()
+                        assert self.change_log_trigger is not None
+                        self.command.drop_trigger_if_exists(
+                            table=self.table, trigger=self.change_log_trigger
+                        )
+                        assert self.change_log_function is not None
+                        self.command.drop_function_if_exists(
+                            function=self.change_log_function
+                        )
+
+    def post_sync_update(self) -> None:
+        with self.tracker.track(_tracker.Stage.POST_SYNC_UPDATE):
+            if self.sync_strategy == _sync_strategy.SyncStrategy.DIRECT_TRIGGER:
+                return
+            elif self.sync_strategy == _sync_strategy.SyncStrategy.CHANGE_LOG:
+                return self._post_sync_update_for_change_log()
+            else:
+                raise NotImplementedError
+
+    def _post_sync_update_for_change_log(self) -> None:
+        assert self.change_log is not None
+        assert self.change_log_batch_size is not None
+        assert self.change_log_copy_function is not None
+
+        while True:
+            with self.command.db_transaction():
+                change_log_batch = self.introspector.get_change_log_batch(
+                    table=self.change_log,
+                    batch_size=self.change_log_batch_size,
+                )
+                if not change_log_batch:
+                    # No batches available to process at present.
+                    break
+
+                self.command.execute_change_log_copy_function(
+                    function=self.change_log_copy_function,
+                    pks=[change.src_pk for change in change_log_batch],
+                )
 
     def swap(self) -> None:
         """
@@ -420,7 +513,7 @@ class Psycopack:
                 self.command.drop_trigger_if_exists(
                     table=self.table, trigger=self.repacked_trigger
                 )
-                self.command.create_copy_trigger(
+                self.command.create_source_to_copy_trigger(
                     trigger_name=self.repacked_trigger,
                     function=self.repacked_function,
                     table_from=self.table,
@@ -467,7 +560,7 @@ class Psycopack:
                 table_from=self.repacked_name, table_to=self.table
             )
             self._create_copy_function()
-            self._create_copy_trigger()
+            self._create_source_to_copy_table_trigger()
 
     def clean_up(self) -> None:
         with self.tracker.track(_tracker.Stage.CLEAN_UP):
@@ -539,6 +632,13 @@ class Psycopack:
                 self.command.drop_table_if_exists(table=self.backfill_log)
                 self.registry.delete_row_for(table=self.table)
 
+                if self.sync_strategy == _sync_strategy.SyncStrategy.CHANGE_LOG:
+                    # The change log trigger and function have already been
+                    # dropped during the schema sync stage. The table is the
+                    # only artefact remaining.
+                    assert self.change_log is not None
+                    self.command.drop_table_if_exists(table=self.change_log)
+
     def reset(self) -> None:
         current_stage = self.tracker.get_current_stage()
         if current_stage == _tracker.Stage.PRE_VALIDATION:
@@ -566,6 +666,18 @@ class Psycopack:
             self.command.drop_table_if_exists(table=self.copy_table)
             self.command.drop_sequence_if_exists(seq=self.id_seq)
             self.command.drop_table_if_exists(table=self.tracker.tracker_table)
+
+            if self.sync_strategy == _sync_strategy.SyncStrategy.CHANGE_LOG:
+                # Drop all remaining artefacts associated with the change log
+                # table.
+                assert self.change_log is not None
+                assert self.change_log_trigger is not None
+                assert self.change_log_function is not None
+                self.command.drop_table_if_exists(table=self.change_log)
+                self.command.drop_trigger_if_exists(
+                    table=self.table, trigger=self.change_log_trigger
+                )
+                self.command.drop_function_if_exists(function=self.change_log_function)
 
     def _create_copy_table(self) -> None:
         # Checks if other relating objects have FKs pointing to the copy table
@@ -649,9 +761,9 @@ class Psycopack:
             pk_column=self.pk_column,
         )
 
-    def _create_copy_trigger(self) -> None:
+    def _create_source_to_copy_table_trigger(self) -> None:
         self.command.drop_trigger_if_exists(table=self.table, trigger=self.trigger)
-        self.command.create_copy_trigger(
+        self.command.create_source_to_copy_trigger(
             trigger_name=self.trigger,
             function=self.function,
             table_from=self.table,
@@ -662,6 +774,51 @@ class Psycopack:
     def _create_backfill_log(self) -> None:
         self.command.drop_table_if_exists(table=self.backfill_log)
         self.command.create_backfill_log(table=self.backfill_log)
+
+    def _create_change_log(self) -> None:
+        assert self.change_log is not None
+        self.command.drop_table_if_exists(table=self.change_log)
+        self.command.create_change_log(src_table=self.table, change_log=self.change_log)
+
+    def _create_change_log_function(self) -> None:
+        assert self.change_log_function is not None
+        assert self.change_log is not None
+
+        self.command.drop_function_if_exists(function=self.change_log_function)
+        self.command.create_change_log_function(
+            function=self.change_log_function,
+            table_from=self.table,
+            table_to=self.change_log,
+        )
+
+    def _create_change_log_copy_function(self) -> None:
+        assert self.change_log_copy_function is not None
+        assert self.change_log is not None
+
+        self.command.drop_function_if_exists(function=self.change_log_copy_function)
+        self.command.create_change_log_copy_function(
+            function=self.change_log_copy_function,
+            table_from=self.table,
+            table_to=self.copy_table,
+            pk_column=self.pk_column,
+            change_log=self.change_log,
+            columns=self.introspector.get_table_columns(table=self.table),
+        )
+
+    def _create_change_log_trigger(self) -> None:
+        assert self.change_log_trigger is not None
+        assert self.change_log_function is not None
+
+        self.command.drop_trigger_if_exists(
+            table=self.table, trigger=self.change_log_trigger
+        )
+        self.command.create_change_log_trigger(
+            trigger_name=self.change_log_trigger,
+            function=self.change_log_function,
+            table_from=self.table,
+            table_to=self.copy_table,
+            pk_column=self.pk_column,
+        )
 
     def _populate_backfill_log(self) -> None:
         # positive pk values
@@ -709,7 +866,7 @@ class Psycopack:
             if self.post_backfill_batch_callback:
                 self.post_backfill_batch_callback(batch)
 
-    def _create_indexes(self) -> None:
+    def _create_indexes(self, concurrently: bool) -> None:
         # Start by checking if there are any invalid indexes already created
         # due to a previous Psycopack run that failed midway through and delete
         # them. This excludes the primary index and exclusion constraints which
@@ -738,13 +895,24 @@ class Psycopack:
             for index in indexes:
                 name = index.name
                 sql = index.definition
-                sql = sql.replace(
-                    "CREATE INDEX", "CREATE INDEX CONCURRENTLY IF NOT EXISTS"
-                )
-                sql = sql.replace(
-                    "CREATE UNIQUE INDEX",
-                    "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS",
-                )
+                if concurrently:
+                    sql = sql.replace(
+                        "CREATE INDEX", "CREATE INDEX CONCURRENTLY IF NOT EXISTS"
+                    )
+                else:
+                    sql = sql.replace("CREATE INDEX", "CREATE INDEX IF NOT EXISTS")
+
+                if concurrently:
+                    sql = sql.replace(
+                        "CREATE UNIQUE INDEX",
+                        "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS",
+                    )
+                else:
+                    sql = sql.replace(
+                        "CREATE UNIQUE INDEX",
+                        "CREATE UNIQUE INDEX IF NOT EXISTS",
+                    )
+
                 sql_arr = sql.split(" ON")
                 new_name = _identifiers.build_postgres_identifier([name], "psycopack")
                 sql_arr[0] = sql_arr[0].replace(name, new_name)
