@@ -466,7 +466,7 @@ class Psycopack:
 
                 self.command.execute_change_log_copy_function(
                     function=self.change_log_copy_function,
-                    pks=[change.src_pk for change in change_log_batch],
+                    batch_size=self.change_log_batch_size,
                 )
 
     def swap(self) -> None:
