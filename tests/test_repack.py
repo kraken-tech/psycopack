@@ -2603,3 +2603,135 @@ def test_repack_with_change_log_strategy(
             repack=repack,
             cur=cur,
         )
+
+
+@pytest.mark.parametrize(
+    "sync_strategy",
+    [SyncStrategy.DIRECT_TRIGGER, SyncStrategy.CHANGE_LOG],
+)
+def test_multiple_foreign_keys_from_same_referring_table(
+    connection: _psycopg.Connection,
+    sync_strategy: SyncStrategy,
+) -> None:
+    """
+    Test that multiple foreign keys from the same referring table are correctly
+    handled during clean_up(). This verifies the fix for the bug where only one
+    FK would be renamed correctly when multiple FKs from the same table
+    existed.
+    """
+    with _cur.get_cursor(connection, logged=True) as cur:
+        # Create the table to be repacked (simulating a users table)
+        cur.execute(
+            dedent("""
+            CREATE TABLE person (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(100)
+            );
+            """)
+        )
+        cur.execute("INSERT INTO person (name) VALUES ('Anna'), ('Bob'), ('Carlos');")
+
+        # Create a referring table with TWO foreign keys to the same table
+        # (simulating created_by and updated_by columns)
+        cur.execute(
+            dedent("""
+            CREATE TABLE posts (
+                id SERIAL PRIMARY KEY,
+                title VARCHAR(200),
+                created_by_id INTEGER REFERENCES person(id),
+                updated_by_id INTEGER REFERENCES person(id)
+            );
+            """)
+        )
+        cur.execute(
+            dedent("""
+            INSERT INTO posts (title, created_by_id, updated_by_id)
+            VALUES
+                ('Post 1', 1, 1),
+                ('Post 2', 1, 2),
+                ('Post 3', 2, 3);
+            """)
+        )
+
+        # Collect FK info before repacking
+        introspector = _introspect.Introspector(
+            conn=connection,
+            cur=cur,
+            schema="public",
+        )
+        fks_before = introspector.get_referring_fks(table="person")
+        assert len(fks_before) == 2, "Expected 2 foreign keys from posts table"
+        fk_names_before = {fk.name for fk in fks_before}
+
+        # Run the full repack
+        repack = Psycopack(
+            table="person",
+            batch_size=10,
+            conn=connection,
+            cur=cur,
+            sync_strategy=sync_strategy,
+            change_log_batch_size=100,
+        )
+        repack.full()
+
+        # Verify both foreign keys still exist and point to the person table
+        fks_after = introspector.get_referring_fks(table="person")
+        assert len(fks_after) == 2, "Expected 2 foreign keys after repack"
+        fk_names_after = {fk.name for fk in fks_after}
+
+        # FK names should be preserved
+        assert fk_names_before == fk_names_after, (
+            f"FK names changed: before={fk_names_before}, after={fk_names_after}"
+        )
+
+        # Verify both FKs are still valid by checking constraints
+        cur.execute(
+            dedent("""
+            SELECT
+              conname,
+              conrelid::regclass,
+              confrelid::regclass
+            FROM
+              pg_constraint
+            WHERE
+              confrelid = 'person'::regclass
+              AND contype = 'f'
+            ORDER BY
+              conname;
+            """)
+        )
+        constraints = cur.fetchall()
+        assert len(constraints) == 2
+
+        # Verify both FKs point to the person table (not the old repacked table)
+        for constraint in constraints:
+            constraint_name, referring_table, referenced_table = constraint
+            assert str(referenced_table) == "person"
+            assert str(referring_table) == "posts"
+
+        # Verify data integrity: FK constraints should still work
+        cur.execute("SELECT COUNT(*) FROM posts;")
+        row = cur.fetchone()
+        assert row is not None
+        assert row[0] == 3
+
+        # Verify we can still query using the foreign keys
+        cur.execute(
+            dedent("""
+            SELECT
+              p.title,
+              u1.name as creator,
+              u2.name as updater
+            FROM posts p
+            JOIN person u1
+              ON p.created_by_id = u1.id
+            JOIN person u2
+              ON p.updated_by_id = u2.id
+            ORDER BY p.id;
+            """)
+        )
+        rows = cur.fetchall()
+        assert len(rows) == 3
+        assert rows[0] == ("Post 1", "Anna", "Anna")
+        assert rows[1] == ("Post 2", "Anna", "Bob")
+        assert rows[2] == ("Post 3", "Bob", "Carlos")
