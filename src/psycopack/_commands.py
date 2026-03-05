@@ -327,12 +327,36 @@ class Command:
         self.cur.execute(
             psycopg.sql.SQL(
                 dedent("""
-                CREATE OR REPLACE FUNCTION {schema}.{function}(VARIADIC pks BIGINT[])
+                CREATE OR REPLACE FUNCTION {schema}.{function}(batch_size BIGINT)
                 RETURNS VOID
                 LANGUAGE plpgsql
                 SECURITY DEFINER
                 AS $$
+                DECLARE
+                  pks BIGINT[];
                 BEGIN
+                  -- Lock change log rows FIRST, then aggregate
+                  SELECT
+                    ARRAY_AGG(src_pk)
+                  INTO
+                    pks
+                  FROM (
+                    SELECT
+                      src_pk
+                    FROM
+                      {schema}.{change_log}
+                    ORDER BY
+                      src_pk
+                    LIMIT
+                      batch_size
+                    FOR UPDATE SKIP LOCKED
+                  ) locked_rows;
+
+                  -- Nothing to do
+                  IF pks IS NULL THEN
+                    RETURN;
+                  END IF;
+
                   -- Lock source rows
                   PERFORM 1
                   FROM {schema}.{table_from}
@@ -343,12 +367,6 @@ class Command:
                   PERFORM 1
                   FROM {schema}.{table_to}
                   WHERE {pk_column} = ANY (pks)
-                  FOR UPDATE;
-
-                  -- Lock change log rows
-                  PERFORM 1
-                  FROM {schema}.{change_log}
-                  WHERE src_pk = ANY (pks)
                   FOR UPDATE;
 
                   -- Delete destination rows
@@ -713,17 +731,14 @@ class Command:
         )
 
     def execute_change_log_copy_function(
-        self,
-        *,
-        function: str,
-        pks: list[int],
+        self, *, function: str, batch_size: int
     ) -> None:
         self.cur.execute(
-            psycopg.sql.SQL("SELECT {schema}.{function}({pks});")
+            psycopg.sql.SQL("SELECT {schema}.{function}({batch_size});")
             .format(
                 function=psycopg.sql.Identifier(function),
                 schema=psycopg.sql.Identifier(self.schema),
-                pks=psycopg.sql.SQL(", ").join(map(psycopg.sql.Literal, pks)),
+                batch_size=psycopg.sql.Literal(batch_size),
             )
             .as_string(self.conn)
         )

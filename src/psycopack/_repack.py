@@ -466,7 +466,7 @@ class Psycopack:
 
                 self.command.execute_change_log_copy_function(
                     function=self.change_log_copy_function,
-                    pks=[change.src_pk for change in change_log_batch],
+                    batch_size=self.change_log_batch_size,
                 )
 
     def swap(self) -> None:
@@ -581,13 +581,41 @@ class Psycopack:
                 idx_data["idx_to"] = idx.name
 
             # Rename foreign keys from other tables using a dict data structure to
-            # hold names from/to.
-            table_to_fk: dict[str, dict[str, str]] = {}
+            # hold names from/to. Support multiple FKs from the same referring table.
+            # Match FKs by their definition (columns), similar to how indexes are matched.
+            fk_definitions: dict[str, list[dict[str, str]]] = defaultdict(list)
+
             for fk in self.introspector.get_referring_fks(table=self.repacked_name):
-                table_to_fk[fk.referring_table] = {"cons_from": fk.name}
+                # Normalize the FK definition by replacing the old table name with the new one
+                # This allows us to match FKs based on their structure.
+                fk_def = fk.definition.replace(
+                    f"REFERENCES {self.schema}.{self.repacked_name}",
+                    f"REFERENCES {self.schema}.{self.table}",
+                ).replace(
+                    f"REFERENCES {self.repacked_name}",
+                    f"REFERENCES {self.table}",
+                )
+                fk_definitions[fk_def].append(
+                    {
+                        "cons_from": fk.name,
+                        "referring_table": fk.referring_table,
+                    }
+                )
 
             for fk in self.introspector.get_referring_fks(table=self.table):
-                table_to_fk[fk.referring_table]["cons_to"] = fk.name
+                # Use the FK definition as the key to match with the old FK.
+                fk_def = fk.definition
+                if fk_def in fk_definitions:
+                    # Find the first unmatched FK with this definition.
+                    fk_pair = next(
+                        (
+                            pair
+                            for pair in fk_definitions[fk_def]
+                            if "cons_to" not in pair
+                        ),
+                    )
+                    if fk_pair:
+                        fk_pair["cons_to"] = fk.name
 
             with (
                 self.command.db_transaction(),
@@ -616,17 +644,17 @@ class Psycopack:
                             idx_to=index_data["idx_from"],
                         )
 
-                for table in table_to_fk:
-                    fk_data = table_to_fk[table]
-                    self.command.drop_constraint(
-                        table=table,
-                        constraint=fk_data["cons_from"],
-                    )
-                    self.command.rename_constraint(
-                        table=table,
-                        cons_from=fk_data["cons_to"],
-                        cons_to=fk_data["cons_from"],
-                    )
+                for fk_def in fk_definitions:
+                    for fk_data in fk_definitions[fk_def]:
+                        self.command.drop_constraint(
+                            table=fk_data["referring_table"],
+                            constraint=fk_data["cons_from"],
+                        )
+                        self.command.rename_constraint(
+                            table=fk_data["referring_table"],
+                            cons_from=fk_data["cons_to"],
+                            cons_to=fk_data["cons_from"],
+                        )
 
                 self.command.drop_table_if_exists(table=self.repacked_name)
                 self.command.drop_table_if_exists(table=self.backfill_log)
