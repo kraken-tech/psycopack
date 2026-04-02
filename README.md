@@ -125,6 +125,14 @@ The following types of tables aren't currently supported:
 - Tables with deferrable unique constraints.
 - Referring foreign keys on a different schema than the original table.
 
+### Limitations when partitioning:
+
+- The CHANGE_LOG strategy must be used when doing partitioning.
+- Unique constraints are skipped, as they are not supported on partitioned
+  tables. The user should add them manually after the process is complete or
+  after the setup step.
+- No support for referring fks yet.
+
 ## Required user permissions (or privileges)
 
 Unless the user is a superuser, they may lack certain privileges to run

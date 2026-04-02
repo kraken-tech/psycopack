@@ -12,6 +12,7 @@ from . import (
     _cur,
     _identifiers,
     _introspect,
+    _partition,
     _registry,
     _sync_strategy,
     _tracker,
@@ -68,6 +69,10 @@ class ReferringForeignKeyInDifferentSchema(BasePsycopackError):
 
 
 class DeferrableUniqueConstraint(BasePsycopackError):
+    pass
+
+
+class PartitioningForTableWithReferringFKs(BasePsycopackError):
     pass
 
 
@@ -149,6 +154,7 @@ class Psycopack:
         skip_permissions_check: bool = False,
         sync_strategy: _sync_strategy.SyncStrategy = _sync_strategy.SyncStrategy.DIRECT_TRIGGER,
         change_log_batch_size: int | None = None,
+        partition_config: _partition.PartitionConfig | None = None,
     ) -> None:
         self.conn = conn
         self.cur = cur
@@ -162,11 +168,23 @@ class Psycopack:
             cur=self.cur,
             introspector=self.introspector,
             schema=schema,
+            partition_config=partition_config,
         )
 
         self.table = table
         self.schema = schema
         self._check_table_exists()
+
+        # Cache the pk_column early to avoid issues when the table is
+        # partitioned later (which creates a composite PK). We do this
+        # after checking the table exists so we can safely introspect it.
+        # The original table always has a single-column PK; partitioning
+        # only affects the copy table until swap() is called.
+        self._pk_column = ""
+        pk_info = self.introspector.get_primary_key_info(table=self.table)
+        if pk_info and len(pk_info.columns) == 1:
+            self._pk_column = pk_info.columns[0]
+
         if not skip_permissions_check:
             self._check_user_permissions()
 
@@ -176,6 +194,7 @@ class Psycopack:
         self.convert_pk_to_bigint = convert_pk_to_bigint
         self.allow_empty = allow_empty
         self.sync_strategy = sync_strategy
+        self.partition_config = partition_config
 
         # Names for psycopack objects are stored in the Registry
         self.registry = _registry.Registry(
@@ -220,19 +239,24 @@ class Psycopack:
             command=self.command,
             schema=schema,
         )
-        self._pk_column = ""
 
     @property
     def pk_column(self) -> str:
         """
         Method to cache the name of the pk column in the instance as to avoid
         calling introspection queries multiple times.
+
+        When partitioning is enabled, the table's PK becomes composite after
+        setup_repacking(). In that case, we return the first column which is
+        always the original single-column PK.
         """
         if self._pk_column:
             return self._pk_column
         pk_info = self.introspector.get_primary_key_info(table=self.table)
         assert pk_info is not None
-        assert len(pk_info.columns) == 1
+        # For partitioned tables, PK becomes composite (original PK + partition column)
+        # We always want the first column, which is the original PK
+        assert len(pk_info.columns) >= 1
         self._pk_column = pk_info.columns[0]
         return self._pk_column
 
@@ -382,6 +406,19 @@ class Psycopack:
                     f"{deferrable_unique_constraints}."
                 )
 
+            if self.partition_config:
+                referring_fks = self.introspector.get_referring_fks(table=self.table)
+                if referring_fks:
+                    fk_names = [
+                        f"{fk.schema}.{fk.referring_table}.{fk.name}"
+                        for fk in referring_fks
+                    ]
+                    raise PartitioningForTableWithReferringFKs(
+                        f"Psycopack does not support partitioning tables with "
+                        f"referring foreign keys. The table {self.table} has "
+                        f"the following referring foreign keys: {fk_names}."
+                    )
+
     def setup_repacking(self) -> None:
         with (
             self.tracker.track(_tracker.Stage.SETUP),
@@ -406,11 +443,11 @@ class Psycopack:
 
     def sync_schemas(self) -> None:
         with self.tracker.track(_tracker.Stage.SYNC_SCHEMAS):
-            self._create_indexes(
-                concurrently=bool(
-                    self.sync_strategy != _sync_strategy.SyncStrategy.CHANGE_LOG
-                )
-            )
+            # Partitioned tables don't support CONCURRENTLY for index creation
+            concurrently = (
+                self.sync_strategy != _sync_strategy.SyncStrategy.CHANGE_LOG
+            ) and not self.partition_config
+            self._create_indexes(concurrently=concurrently)
             with self.command.lock_timeout(self.lock_timeout):
                 self._create_unique_constraints()
                 self._create_check_and_fk_constraints()
@@ -489,7 +526,9 @@ class Psycopack:
                     table=self.table, trigger=self.trigger
                 )
                 self.command.drop_function_if_exists(function=self.function)
-                if self.introspector.get_pk_sequence_name(table=self.table):
+                if self.introspector.get_pk_sequence_name(
+                    table=self.table
+                ) and self.introspector.get_pk_sequence_name(table=self.copy_table):
                     self.command.swap_pk_sequence_name(
                         first_table=self.table, second_table=self.copy_table
                     )
@@ -546,7 +585,9 @@ class Psycopack:
                 trigger=self.repacked_trigger,
             )
             self.command.drop_function_if_exists(function=self.repacked_function)
-            if self.introspector.get_pk_sequence_name(table=self.table):
+            if self.introspector.get_pk_sequence_name(
+                table=self.table
+            ) and self.introspector.get_pk_sequence_name(table=self.repacked_name):
                 self.command.swap_pk_sequence_name(
                     first_table=self.table, second_table=self.repacked_name
                 )
@@ -577,8 +618,13 @@ class Psycopack:
                 sql = idx.definition
                 sql_arr = sql.split(" ON")
                 sql = sql_arr[1]
-                idx_data = next(idx for idx in indexes[sql] if "idx_to" not in idx)
-                idx_data["idx_to"] = idx.name
+                # Find matching index. Skip if not found (e.g., partitioned table with different PK)
+                matching_idx = next(
+                    (idx for idx in indexes.get(sql, []) if "idx_to" not in idx),
+                    None,
+                )
+                if matching_idx:
+                    matching_idx["idx_to"] = idx.name
 
             # Rename foreign keys from other tables using a dict data structure to
             # hold names from/to. Support multiple FKs from the same referring table.
@@ -633,6 +679,9 @@ class Psycopack:
 
                 for idx_sql in indexes:
                     for index_data in indexes[idx_sql]:
+                        # Skip if no matching index was found (e.g., partitioned table with different PK)
+                        if "idx_to" not in index_data:
+                            continue
                         self.command.rename_index(
                             idx_from=index_data["idx_from"],
                             idx_to=_identifiers.build_postgres_identifier(
@@ -646,6 +695,9 @@ class Psycopack:
 
                 for fk_def in fk_definitions:
                     for fk_data in fk_definitions[fk_def]:
+                        # Skip if no matching FK was found (e.g., partitioned table)
+                        if "cons_to" not in fk_data:
+                            continue
                         self.command.drop_constraint(
                             table=fk_data["referring_table"],
                             constraint=fk_data["cons_from"],
@@ -654,6 +706,15 @@ class Psycopack:
                             table=fk_data["referring_table"],
                             cons_from=fk_data["cons_to"],
                             cons_to=fk_data["cons_from"],
+                        )
+
+                # For partitioned tables, drop referring FKs before dropping the table
+                if self.partition_config:
+                    for fk in self.introspector.get_referring_fks(
+                        table=self.repacked_name
+                    ):
+                        self.command.drop_constraint(
+                            table=fk.referring_table, constraint=fk.name
                         )
 
                 self.command.drop_table_if_exists(table=self.repacked_name)
@@ -923,6 +984,12 @@ class Psycopack:
             for index in indexes:
                 name = index.name
                 sql = index.definition
+
+                # For partitioned tables, convert UNIQUE indexes to regular indexes
+                # since unique constraints must include all partitioning columns
+                if self.partition_config and "UNIQUE" in sql:
+                    sql = sql.replace("CREATE UNIQUE INDEX", "CREATE INDEX")
+
                 if concurrently:
                     sql = sql.replace(
                         "CREATE INDEX", "CREATE INDEX CONCURRENTLY IF NOT EXISTS"
@@ -955,6 +1022,11 @@ class Psycopack:
                 self.cur.execute(sql)
 
     def _create_unique_constraints(self) -> None:
+        # Skip unique constraints for partitioned tables since they must
+        # include all partitioning columns
+        if self.partition_config:
+            return
+
         table_constraints = self.introspector.get_constraints(
             table=self.table, types=["u"]
         )
@@ -1008,6 +1080,11 @@ class Psycopack:
                 )
 
     def _create_referring_fks(self) -> None:
+        # Skip referring FKs for partitioned tables since the PK now includes
+        # the partition column, making it incompatible with existing FKs
+        if self.partition_config:
+            return
+
         table_fks = self.introspector.get_referring_fks(table=self.table)
         copy_fks = self.introspector.get_referring_fks(table=self.copy_table)
 
