@@ -22,7 +22,10 @@ class Command:
         self.introspector = introspector
         self.schema = schema
 
-    def drop_constraint(self, *, table: str, constraint: str) -> None:
+    def drop_constraint(
+        self, *, table: str, constraint: str, schema: str | None = None
+    ) -> None:
+        schema = schema or self.schema
         self.cur.execute(
             psycopg.sql.SQL(
                 dedent("""
@@ -33,7 +36,7 @@ class Command:
             .format(
                 table=psycopg.sql.Identifier(table),
                 constraint=psycopg.sql.Identifier(constraint),
-                schema=psycopg.sql.Identifier(self.schema),
+                schema=psycopg.sql.Identifier(schema),
             )
             .as_string(self.conn)
         )
@@ -509,16 +512,21 @@ class Command:
         )
 
     def create_not_valid_constraint_from_def(
-        self, *, table: str, constraint: str, definition: str, is_validated: bool
+        self,
+        *,
+        table: str,
+        constraint: str,
+        definition: str,
+        is_validated: bool,
+        schema: str | None = None,
     ) -> None:
+        schema = schema or self.schema
         add_constraint_sql = dedent("""
             ALTER TABLE {schema}.{table}
             ADD CONSTRAINT {constraint}
             {definition}
         """)
         if is_validated:
-            # If the definition is for a valid constraint, alter it to be not
-            # valid manually so that it can be created ONLINE.
             add_constraint_sql += " NOT VALID"
         self.cur.execute(
             psycopg.sql.SQL(add_constraint_sql)
@@ -526,12 +534,15 @@ class Command:
                 table=psycopg.sql.Identifier(table),
                 constraint=psycopg.sql.Identifier(constraint),
                 definition=psycopg.sql.SQL(definition),
-                schema=psycopg.sql.Identifier(self.schema),
+                schema=psycopg.sql.Identifier(schema),
             )
             .as_string(self.conn)
         )
 
-    def validate_constraint(self, *, table: str, constraint: str) -> None:
+    def validate_constraint(
+        self, *, table: str, constraint: str, schema: str | None = None
+    ) -> None:
+        schema = schema or self.schema
         self.cur.execute(
             psycopg.sql.SQL(
                 dedent("""
@@ -542,7 +553,7 @@ class Command:
             .format(
                 table=psycopg.sql.Identifier(table),
                 constraint=psycopg.sql.Identifier(constraint),
-                schema=psycopg.sql.Identifier(self.schema),
+                schema=psycopg.sql.Identifier(schema),
             )
             .as_string(self.conn)
         )
@@ -591,7 +602,15 @@ class Command:
             .as_string(self.conn)
         )
 
-    def rename_constraint(self, *, table: str, cons_from: str, cons_to: str) -> None:
+    def rename_constraint(
+        self,
+        *,
+        table: str,
+        cons_from: str,
+        cons_to: str,
+        schema: str | None = None,
+    ) -> None:
+        schema = schema or self.schema
         self.cur.execute(
             psycopg.sql.SQL(
                 "ALTER TABLE {schema}.{table} RENAME CONSTRAINT {cons_from} TO {cons_to};"
@@ -600,7 +619,7 @@ class Command:
                 table=psycopg.sql.Identifier(table),
                 cons_from=psycopg.sql.Identifier(cons_from),
                 cons_to=psycopg.sql.Identifier(cons_to),
-                schema=psycopg.sql.Identifier(self.schema),
+                schema=psycopg.sql.Identifier(schema),
             )
             .as_string(self.conn)
         )

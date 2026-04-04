@@ -93,6 +93,14 @@ class PostBackfillBatchCallback(typing.Protocol):
     ) -> None: ...  # pragma: no cover
 
 
+class _ForeignKeyCleanupPair(typing.TypedDict):
+    schema: str
+    referring_table: str
+    cons_from: str
+    cons_to: str
+    old_is_validated: bool
+    new_is_validated: bool
+
 class Psycopack:
     """
     Class for operating a full table copy-and-swap (Psycopack) process.
@@ -354,6 +362,7 @@ class Psycopack:
                     f"before proceeding with Psycopack: {invalid_indexes}."
                 )
 
+            """
             fks_in_different_schema = [
                 f"{fk.schema}.{fk.name}"
                 for fk in self.introspector.get_referring_fks(table=self.table)
@@ -366,7 +375,7 @@ class Psycopack:
                     f"has the following referring foreign keys in a different "
                     f"schema: {fks_in_different_schema}."
                 )
-
+            """
             deferrable_unique_constraints = [
                 c.name
                 for c in self.introspector.get_constraints(
@@ -580,42 +589,46 @@ class Psycopack:
                 idx_data = next(idx for idx in indexes[sql] if "idx_to" not in idx)
                 idx_data["idx_to"] = idx.name
 
-            # Rename foreign keys from other tables using a dict data structure to
-            # hold names from/to. Support multiple FKs from the same referring table.
-            # Match FKs by their definition (columns), similar to how indexes are matched.
-            fk_definitions: dict[str, list[dict[str, str]]] = defaultdict(list)
+            # Rename foreign keys from other tables by matching each original FK on the
+            # repacked table with the swapped-in replacement FK on the new table.
+            #
+            # The replacement FK is created in _create_referring_fks() with a deterministic
+            # temporary name:
+            #   build_postgres_identifier([old_fk.name], "psycopack")
+            #
+            # Matching by name is more reliable than matching by pg_get_constraintdef()
+            # text in retry / reentrant scenarios.
+            fk_pairs: list[_ForeignKeyCleanupPair] = []
 
-            for fk in self.introspector.get_referring_fks(table=self.repacked_name):
-                # Normalize the FK definition by replacing the old table name with the new one
-                # This allows us to match FKs based on their structure.
-                fk_def = fk.definition.replace(
-                    f"REFERENCES {self.schema}.{self.repacked_name}",
-                    f"REFERENCES {self.schema}.{self.table}",
-                ).replace(
-                    f"REFERENCES {self.repacked_name}",
-                    f"REFERENCES {self.table}",
-                )
-                fk_definitions[fk_def].append(
-                    {
-                        "cons_from": fk.name,
-                        "referring_table": fk.referring_table,
-                    }
-                )
+            new_fks_by_location_and_name: dict[
+                tuple[str, str, str], _introspect.ReferringForeignKey
+            ] = {}
 
             for fk in self.introspector.get_referring_fks(table=self.table):
-                # Use the FK definition as the key to match with the old FK.
-                fk_def = fk.definition
-                if fk_def in fk_definitions:
-                    # Find the first unmatched FK with this definition.
-                    fk_pair = next(
-                        (
-                            pair
-                            for pair in fk_definitions[fk_def]
-                            if "cons_to" not in pair
-                        ),
-                    )
-                    if fk_pair:
-                        fk_pair["cons_to"] = fk.name
+                new_fks_by_location_and_name[(fk.schema, fk.referring_table, fk.name)] = fk
+
+            for old_fk in self.introspector.get_referring_fks(table=self.repacked_name):
+                expected_new_name = _identifiers.build_postgres_identifier(
+                    [old_fk.name], "psycopack"
+                )
+                new_fk = new_fks_by_location_and_name.get(
+                    (old_fk.schema, old_fk.referring_table, expected_new_name)
+                )
+                assert new_fk is not None, (
+                    f"Could not find swapped-in FK {expected_new_name} on "
+                    f"{old_fk.schema}.{old_fk.referring_table} for original FK "
+                    f"{old_fk.name}."
+                )
+                fk_pairs.append(
+                    {
+                        "schema": old_fk.schema,
+                        "referring_table": old_fk.referring_table,
+                        "cons_from": old_fk.name,
+                        "cons_to": new_fk.name,
+                        "old_is_validated": old_fk.is_validated,
+                        "new_is_validated": new_fk.is_validated,
+                    }
+                )
 
             with (
                 self.command.db_transaction(),
@@ -644,16 +657,23 @@ class Psycopack:
                             idx_to=index_data["idx_from"],
                         )
 
-                for fk_def in fk_definitions:
-                    for fk_data in fk_definitions[fk_def]:
-                        self.command.drop_constraint(
+                for fk_data in fk_pairs:
+                    self.command.drop_constraint(
+                        table=fk_data["referring_table"],
+                        constraint=fk_data["cons_from"],
+                        schema=fk_data["schema"],
+                    )
+                    self.command.rename_constraint(
+                        table=fk_data["referring_table"],
+                        cons_from=fk_data["cons_to"],
+                        cons_to=fk_data["cons_from"],
+                        schema=fk_data["schema"],
+                    )
+                    if fk_data["old_is_validated"] and not fk_data["new_is_validated"]:
+                        self.command.validate_constraint(
                             table=fk_data["referring_table"],
                             constraint=fk_data["cons_from"],
-                        )
-                        self.command.rename_constraint(
-                            table=fk_data["referring_table"],
-                            cons_from=fk_data["cons_to"],
-                            cons_to=fk_data["cons_from"],
+                            schema=fk_data["schema"],
                         )
 
                 self.command.drop_table_if_exists(table=self.repacked_name)
@@ -686,7 +706,9 @@ class Psycopack:
                 fks = self.introspector.get_referring_fks(table=self.copy_table)
                 for fk in fks:
                     self.command.drop_constraint(
-                        table=fk.referring_table, constraint=fk.name
+                        table=fk.referring_table,
+                        constraint=fk.name,
+                        schema=fk.schema,
                     )
             self.command.drop_trigger_if_exists(table=self.table, trigger=self.trigger)
             self.command.drop_function_if_exists(function=self.function)
@@ -714,7 +736,9 @@ class Psycopack:
         if self.introspector.get_table_oid(table=self.copy_table) is not None:
             for fk in self.introspector.get_referring_fks(table=self.copy_table):
                 self.command.drop_constraint(
-                    table=fk.referring_table, constraint=fk.name
+                    table=fk.referring_table,
+                    constraint=fk.name,
+                    schema=fk.schema,
                 )
             self.command.drop_table_if_exists(table=self.copy_table)
 
@@ -1037,11 +1061,14 @@ class Psycopack:
                     constraint=constraint_name,
                     definition=definition,
                     is_validated=fk.is_validated,
+                    schema=fk.schema,
                 )
-            if fk.is_validated:
-                self.command.validate_constraint(
-                    table=fk.referring_table, constraint=constraint_name
-                )
+                if fk.is_validated:
+                    self.command.validate_constraint(
+                        table=fk.referring_table,
+                        constraint=constraint_name,
+                        schema=fk.schema,
+                    )
 
     def _check_user_permissions(self) -> None:
         if not self.introspector.has_create_and_usage_privilege_on_schema():
