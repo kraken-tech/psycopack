@@ -18,6 +18,7 @@ from psycopack import (
     NoReferencesPrivilege,
     NoReferringTableOwnership,
     NotTableOwner,
+    PartitioningForTableWithReferringFKs,
     PrimaryKeyNotFound,
     Psycopack,
     ReferringForeignKeyInDifferentSchema,
@@ -30,6 +31,7 @@ from psycopack import (
     _const,
     _cur,
     _introspect,
+    _partition,
     _psycopg,
     _tracker,
 )
@@ -2050,6 +2052,46 @@ def test_with_deferrable_unique_constraint(connection: _psycopg.Connection) -> N
             repack.full()
 
 
+def test_partition_with_referring_fks(connection: _psycopg.Connection) -> None:
+    with _cur.get_cursor(connection, logged=True) as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+            pk_type="integer",
+        )
+        # Create a referring table with FK to to_repack
+        cur.execute("DROP TABLE IF EXISTS referring_table;")
+        cur.execute(
+            dedent("""
+            CREATE TABLE referring_table (
+              id SERIAL PRIMARY KEY,
+              to_repack_id INTEGER REFERENCES to_repack(id)
+            );
+            """)
+        )
+        repack = Psycopack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+            partition_config=_partition.PartitionConfig(
+                column="datetime_field",
+                num_of_extra_partitions_ahead=10,
+                strategy=_partition.DateRangeStrategy(
+                    partition_by=_partition.PartitionInterval.DAY
+                ),
+            ),
+        )
+
+        with pytest.raises(
+            PartitioningForTableWithReferringFKs,
+            match="referring foreign keys",
+        ):
+            repack.full()
+
+
 def test_without_schema_privileges(connection: _psycopg.Connection) -> None:
     schema = "sweet_schema"
     with _cur.get_cursor(connection, logged=True) as cur:
@@ -2735,3 +2777,306 @@ def test_multiple_foreign_keys_from_same_referring_table(
         assert rows[0] == ("Post 1", "Anna", "Anna")
         assert rows[1] == ("Post 2", "Anna", "Bob")
         assert rows[2] == ("Post 3", "Bob", "Carlos")
+
+
+def test_repack_with_day_range_partition(connection: _psycopg.Connection) -> None:
+    with _cur.get_cursor(connection) as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+        )
+        # Clean up any referring tables from other tests
+        cur.execute("DROP TABLE IF EXISTS referring_table CASCADE;")
+        cur.execute("DROP TABLE IF EXISTS not_valid_referring_table CASCADE;")
+        cur.execute("DROP TABLE IF EXISTS other_referring_table CASCADE;")
+        # Insert a row with a datetime field for the last day of January to
+        # guarantee all of January will be covered by partitions.
+        create_row_sql = dedent(
+            """
+            INSERT INTO
+              to_repack
+              (datetime_field)
+            VALUES
+              ('2025-01-31 23:59:59');
+        """
+        )
+        # Insert a row in the table to_repack, to verify the trigger places the
+        # pk of the row being changed in the change log.
+        cur.execute(create_row_sql)
+        repack = Psycopack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+            partition_config=_partition.PartitionConfig(
+                column="datetime_field",
+                num_of_extra_partitions_ahead=10,
+                strategy=_partition.DateRangeStrategy(
+                    partition_by=_partition.PartitionInterval.DAY
+                ),
+            ),
+        )
+        repack.full()
+
+        # Verify the table is now partitioned
+        cur.execute("""
+            SELECT
+              pt.relname AS partition_name
+            FROM
+              pg_inherits
+            JOIN
+              pg_class pt
+              ON pt.oid = inhrelid
+            JOIN
+              pg_class p
+              ON p.oid = inhparent
+            WHERE
+              p.relname = 'to_repack'
+            ORDER BY
+              partition_name;
+        """)
+        partitions = cur.fetchall()
+        assert len(partitions) > 0, "Table should have partitions"
+
+        # Verify partition names follow the date-based format
+        # Example: to_repack_p20250106 (table_name_pYYYYMMDD for DAY)
+        # We should have partitions from MIN(datetime_field) to MAX(datetime_field) + 10 extra days
+        # Since we inserted a row with 2025-01-31, we know that will be included
+        partition_names = [p[0] for p in partitions]
+
+        # All partitions should follow the naming format: to_repack_pYYYYMMDD
+        for partition_name in partition_names:
+            assert partition_name.startswith("to_repack_p"), (
+                f"Invalid partition name: {partition_name}"
+            )
+            date_part = partition_name.replace("to_repack_p", "")
+            assert len(date_part) == 8, (
+                f"Date part should be 8 digits (YYYYMMDD): {partition_name}"
+            )
+            assert date_part.isdigit(), f"Date part should be numeric: {partition_name}"
+
+        # Verify we have the partition for the explicitly inserted row (2025-01-31)
+        assert "to_repack_p20250131" in partition_names, (
+            "Should have partition for 2025-01-31"
+        )
+
+        # Verify we have 10 extra partitions after the max date (into February)
+        february_partitions = [
+            p for p in partition_names if p.startswith("to_repack_p202502")
+        ]
+        assert len(february_partitions) == 10, (
+            f"Should have exactly 10 partitions in February, got {len(february_partitions)}"
+        )
+
+        # Verify the primary key includes both id and datetime_field (partition column)
+        cur.execute(
+            """
+            SELECT
+              a.attname AS column_name
+            FROM
+              pg_index i
+            JOIN
+              pg_attribute a
+              ON a.attrelid = i.indrelid
+              AND a.attnum = ANY(i.indkey)
+            WHERE
+              i.indrelid = 'to_repack'::regclass
+              AND i.indisprimary
+            ORDER BY
+              array_position(i.indkey, a.attnum);
+        """
+        )
+        pk_columns = [row[0] for row in cur.fetchall()]
+        assert pk_columns == ["id", "datetime_field"]
+
+        # Verify data integrity
+        cur.execute("SELECT COUNT(*) FROM to_repack;")
+        count = cur.fetchone()
+        assert count is not None
+        assert count[0] == 101, "All rows should be present (100 + 1 inserted)"
+
+
+def test_repack_with_month_range_partition(connection: _psycopg.Connection) -> None:
+    with _cur.get_cursor(connection) as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+        )
+        # Clean up any referring tables from other tests
+        cur.execute("DROP TABLE IF EXISTS referring_table CASCADE;")
+        cur.execute("DROP TABLE IF EXISTS not_valid_referring_table CASCADE;")
+        cur.execute("DROP TABLE IF EXISTS other_referring_table CASCADE;")
+        # Insert a row with a datetime field for the last day of June to
+        # guarantee partitions from Jan to Jun (plus extras) will be created.
+        create_row_sql = dedent(
+            """
+            INSERT INTO
+              to_repack
+              (datetime_field)
+            VALUES
+              ('2025-06-30 23:59:59');
+        """
+        )
+        cur.execute(create_row_sql)
+        repack = Psycopack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+            partition_config=_partition.PartitionConfig(
+                column="datetime_field",
+                num_of_extra_partitions_ahead=3,
+                strategy=_partition.DateRangeStrategy(
+                    partition_by=_partition.PartitionInterval.MONTH
+                ),
+            ),
+        )
+        repack.full()
+
+        # Verify the table is now partitioned
+        cur.execute("""
+            SELECT
+              pt.relname AS partition_name
+            FROM
+              pg_inherits
+            JOIN
+              pg_class pt
+              ON pt.oid = inhrelid
+            JOIN
+              pg_class p
+              ON p.oid = inhparent
+            WHERE
+              p.relname = 'to_repack'
+            ORDER BY
+              partition_name;
+        """)
+        partitions = cur.fetchall()
+        assert len(partitions) > 0, "Table should have partitions"
+
+        # Verify partition names follow the date-based format
+        # Example: to_repack_p202501 (table_name_pYYYYMM for MONTH)
+        # We should have partitions from MIN(datetime_field) to MAX(datetime_field) + 3 extra months
+        # Since we inserted a row with 2025-06-30, we know June will be included
+        partition_names = [p[0] for p in partitions]
+        assert partition_names == [
+            "to_repack_p202501",
+            "to_repack_p202502",
+            "to_repack_p202503",
+            "to_repack_p202504",
+            "to_repack_p202505",
+            "to_repack_p202506",
+            "to_repack_p202507",
+            "to_repack_p202508",
+            "to_repack_p202509",
+        ]
+
+        # Verify the primary key includes both id and datetime_field (partition column)
+        cur.execute(
+            """
+            SELECT
+              a.attname AS column_name
+            FROM
+              pg_index i
+            JOIN
+              pg_attribute a
+              ON a.attrelid = i.indrelid
+              AND a.attnum = ANY(i.indkey)
+            WHERE
+              i.indrelid = 'to_repack'::regclass
+              AND i.indisprimary
+            ORDER BY
+              array_position(i.indkey, a.attnum);
+        """
+        )
+        pk_columns = [row[0] for row in cur.fetchall()]
+        assert pk_columns == ["id", "datetime_field"]
+
+        # Verify data integrity
+        cur.execute("SELECT COUNT(*) FROM to_repack;")
+        count = cur.fetchone()
+        assert count is not None
+        assert count[0] == 101, "All rows should be present (100 + 1 inserted)"
+
+
+def test_partition_calling_stages_individually(
+    connection: _psycopg.Connection,
+) -> None:
+    """
+    Test that partitioning works when calling stages individually (e.g., swap()
+    directly) rather than using full(). This simulates resuming a repack process.
+    """
+    with _cur.get_cursor(connection) as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+        )
+        # Clean up any referring tables from other tests
+        cur.execute("DROP TABLE IF EXISTS referring_table CASCADE;")
+        cur.execute("DROP TABLE IF EXISTS not_valid_referring_table CASCADE;")
+        cur.execute("DROP TABLE IF EXISTS other_referring_table CASCADE;")
+
+        # Create the Psycopack instance with partition config
+        repack = Psycopack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+            partition_config=_partition.PartitionConfig(
+                column="datetime_field",
+                num_of_extra_partitions_ahead=3,
+                strategy=_partition.DateRangeStrategy(
+                    partition_by=_partition.PartitionInterval.MONTH
+                ),
+            ),
+        )
+
+        # Call stages individually
+        repack.pre_validate()
+        repack.setup_repacking()
+        repack.backfill()
+        repack.sync_schemas()
+        repack.post_sync_update()
+
+        # Now instantiate a new Psycopack and call swap() directly
+        # (simulating resuming from a previous run)
+        repack2 = Psycopack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+            partition_config=_partition.PartitionConfig(
+                column="datetime_field",
+                num_of_extra_partitions_ahead=3,
+                strategy=_partition.DateRangeStrategy(
+                    partition_by=_partition.PartitionInterval.MONTH
+                ),
+            ),
+        )
+        repack2.swap()
+        repack2.clean_up()
+
+        # Verify the table is now partitioned
+        cur.execute("""
+            SELECT
+              pt.relname AS partition_name
+            FROM
+              pg_inherits
+            JOIN
+              pg_class pt
+              ON pt.oid = inhrelid
+            JOIN
+              pg_class p
+              ON p.oid = inhparent
+            WHERE
+              p.relname = 'to_repack'
+            ORDER BY
+              partition_name;
+        """)
+        partitions = cur.fetchall()
+        assert len(partitions) > 0, "Table should have partitions"

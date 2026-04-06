@@ -4,7 +4,7 @@ from contextlib import contextmanager
 from textwrap import dedent
 from typing import Iterator
 
-from . import _cur, _introspect
+from . import _cur, _introspect, _partition
 from . import _psycopg as psycopg
 
 
@@ -16,11 +16,13 @@ class Command:
         cur: _cur.Cursor,
         introspector: _introspect.Introspector,
         schema: str,
+        partition_config: _partition.PartitionConfig | None = None,
     ) -> None:
         self.conn = conn
         self.cur = cur
         self.introspector = introspector
         self.schema = schema
+        self.partition_config = partition_config
 
     def drop_constraint(self, *, table: str, constraint: str) -> None:
         self.cur.execute(
@@ -49,6 +51,17 @@ class Command:
         )
 
     def create_copy_table(self, *, base_table: str, copy_table: str) -> None:
+        if self.partition_config:
+            return self._create_partitioned_table(
+                base_table=base_table, copy_table=copy_table
+            )
+
+        # Create a non-partitioned table (default behavior)
+        self._create_non_partitioned_table(base_table=base_table, copy_table=copy_table)
+
+    def _create_non_partitioned_table(
+        self, *, base_table: str, copy_table: str
+    ) -> None:
         self.cur.execute(
             psycopg.sql.SQL(
                 dedent("""
@@ -60,6 +73,189 @@ class Command:
                 table=psycopg.sql.Identifier(base_table),
                 copy_table=psycopg.sql.Identifier(copy_table),
                 schema=psycopg.sql.Identifier(self.schema),
+            )
+            .as_string(self.conn)
+        )
+
+    def _create_partitioned_table(self, *, base_table: str, copy_table: str) -> None:
+        assert self.partition_config is not None
+        assert isinstance(self.partition_config.strategy, _partition.DateRangeStrategy)
+
+        # Create the parent partitioned table
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                CREATE TABLE {schema}.{copy_table}
+                (LIKE {schema}.{table} INCLUDING DEFAULTS)
+                PARTITION BY RANGE ({partition_column});
+                """)
+            )
+            .format(
+                table=psycopg.sql.Identifier(base_table),
+                copy_table=psycopg.sql.Identifier(copy_table),
+                schema=psycopg.sql.Identifier(self.schema),
+                partition_column=psycopg.sql.Identifier(self.partition_config.column),
+            )
+            .as_string(self.conn)
+        )
+
+        # Create partitions ahead of time
+        self._create_partitions(base_table=base_table, copy_table=copy_table)
+
+    def _create_partitions(self, *, base_table: str, copy_table: str) -> None:
+        assert self.partition_config is not None
+        strategy = self.partition_config.strategy
+        assert isinstance(strategy, _partition.DateRangeStrategy)
+
+        num_of_extra_partitions = self.partition_config.num_of_extra_partitions_ahead
+
+        min_value = self.introspector.get_min_partition_date_value(
+            table=base_table, column=self.partition_config.column
+        )
+        max_value = self.introspector.get_max_partition_date_value(
+            table=base_table, column=self.partition_config.column
+        )
+        partition_start = self._get_first_partition_start_date(
+            min_value=min_value, strategy=strategy
+        )
+        partition_end = self._get_last_partition_end_date(
+            max_value=max_value,
+            strategy=strategy,
+            num_of_extra_partitions=num_of_extra_partitions,
+        )
+
+        # Create partitions from partition_start to partition_end
+        current_partition_start = partition_start
+
+        while current_partition_start < partition_end:
+            partition_suffix = self._get_partition_suffix(
+                current_partition_start=current_partition_start, strategy=strategy
+            )
+
+            current_partition_end = self._get_partition_end_boundary(
+                current_partition_start=current_partition_start, strategy=strategy
+            )
+            self._create_datetime_partition(
+                base_table=base_table,
+                copy_table=copy_table,
+                partition_suffix=partition_suffix,
+                start=current_partition_start,
+                end=current_partition_end,
+            )
+            current_partition_start = current_partition_end
+
+    def _get_first_partition_start_date(
+        self, *, min_value: datetime.date, strategy: _partition.DateRangeStrategy
+    ) -> datetime.date:
+        """
+        Align the minimum value to partition boundaries.
+        For DAY: uses the exact min_value
+        For MONTH: aligns to the first day of the month
+        """
+        if strategy.partition_by == _partition.PartitionInterval.DAY:
+            return min_value
+        elif strategy.partition_by == _partition.PartitionInterval.MONTH:
+            # Align to start of month
+            return min_value.replace(day=1)
+        else:
+            raise ValueError(f"Unsupported partition_by: {strategy.partition_by}")
+
+    def _get_last_partition_end_date(
+        self,
+        *,
+        max_value: datetime.date,
+        strategy: _partition.DateRangeStrategy,
+        num_of_extra_partitions: int,
+    ) -> datetime.date:
+        """
+        Calculate the end date for partitioning.
+        Always adds 1 interval unit to cover max_value (since range partitions are
+        exclusive on the upper bound), plus num_of_extra_partitions.
+        For DAY: adds 1 + num_of_extra_partitions days
+        For MONTH: adds 1 + num_of_extra_partitions months
+        """
+        if strategy.partition_by == _partition.PartitionInterval.DAY:
+            # Add 1 day to ensure max_value is covered, plus extra partitions
+            return max_value + datetime.timedelta(days=1 + num_of_extra_partitions)
+        elif strategy.partition_by == _partition.PartitionInterval.MONTH:
+            # Add 1 month to ensure max_value is covered, plus extra partitions
+            # Add months by advancing to first of month and adding 32*months,
+            # then normalising. This is because timedelta doesn't accept
+            # "months" as argument.
+            temp_date = max_value.replace(day=1)
+            for _ in range(1 + num_of_extra_partitions):
+                temp_date = (temp_date + datetime.timedelta(days=32)).replace(day=1)
+            return temp_date
+        else:
+            raise ValueError(f"Unsupported partition_by: {strategy.partition_by}")
+
+    def _get_partition_end_boundary(
+        self,
+        *,
+        current_partition_start: datetime.date,
+        strategy: _partition.DateRangeStrategy,
+    ) -> datetime.date:
+        """
+        Calculate the end boundary for a single partition.
+        For DAY: adds 1 day
+        For MONTH: advances to the first day of the next month
+        """
+        if strategy.partition_by == _partition.PartitionInterval.DAY:
+            return current_partition_start + datetime.timedelta(days=1)
+        elif strategy.partition_by == _partition.PartitionInterval.MONTH:
+            # Next month boundary
+            return (current_partition_start + datetime.timedelta(days=32)).replace(
+                day=1
+            )
+        else:
+            raise ValueError(f"Unsupported partition_by: {strategy.partition_by}")
+
+    def _get_partition_suffix(
+        self,
+        *,
+        current_partition_start: datetime.date,
+        strategy: _partition.DateRangeStrategy,
+    ) -> str:
+        """
+        Generate a date-based partition suffix.
+        For DAY: returns p20250101 (YYYYMMDD format)
+        For MONTH: returns p202501 (YYYYMM format)
+        """
+        if strategy.partition_by == _partition.PartitionInterval.DAY:
+            # Format: p20250101 (YYYYMMDD)
+            return f"p{current_partition_start.strftime('%Y%m%d')}"
+        elif strategy.partition_by == _partition.PartitionInterval.MONTH:
+            # Format: p202501 (YYYYMM)
+            return f"p{current_partition_start.strftime('%Y%m')}"
+        else:
+            raise ValueError(f"Unsupported partition_by: {strategy.partition_by}")
+
+    def _create_datetime_partition(
+        self,
+        *,
+        base_table: str,
+        copy_table: str,
+        partition_suffix: str,
+        start: datetime.date,
+        end: datetime.date,
+    ) -> None:
+        """Create a single datetime range partition."""
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                CREATE TABLE {schema}.{partition_name}
+                PARTITION OF {schema}.{copy_table}
+                FOR VALUES FROM ({start}) TO ({end});
+                """)
+            )
+            .format(
+                schema=psycopg.sql.Identifier(self.schema),
+                partition_name=psycopg.sql.Identifier(
+                    f"{base_table}_{partition_suffix}"
+                ),
+                copy_table=psycopg.sql.Identifier(copy_table),
+                start=psycopg.sql.Literal(start),
+                end=psycopg.sql.Literal(end),
             )
             .as_string(self.conn)
         )
@@ -109,17 +305,37 @@ class Command:
         )
 
     def add_pk(self, *, table: str, pk_column: str) -> None:
-        self.cur.execute(
-            psycopg.sql.SQL(
-                "ALTER TABLE {schema}.{table} ADD PRIMARY KEY ({pk_column});"
+        # For partitioned tables, the PK must include all partitioning columns
+        if self.partition_config:
+            pk_columns = psycopg.sql.SQL(", ").join(
+                [
+                    psycopg.sql.Identifier(pk_column),
+                    psycopg.sql.Identifier(self.partition_config.column),
+                ]
             )
-            .format(
-                table=psycopg.sql.Identifier(table),
-                pk_column=psycopg.sql.Identifier(pk_column),
-                schema=psycopg.sql.Identifier(self.schema),
+            self.cur.execute(
+                psycopg.sql.SQL(
+                    "ALTER TABLE {schema}.{table} ADD PRIMARY KEY ({pk_columns});"
+                )
+                .format(
+                    table=psycopg.sql.Identifier(table),
+                    pk_columns=pk_columns,
+                    schema=psycopg.sql.Identifier(self.schema),
+                )
+                .as_string(self.conn)
             )
-            .as_string(self.conn)
-        )
+        else:
+            self.cur.execute(
+                psycopg.sql.SQL(
+                    "ALTER TABLE {schema}.{table} ADD PRIMARY KEY ({pk_column});"
+                )
+                .format(
+                    table=psycopg.sql.Identifier(table),
+                    pk_column=psycopg.sql.Identifier(pk_column),
+                    schema=psycopg.sql.Identifier(self.schema),
+                )
+                .as_string(self.conn)
+            )
 
     def create_copy_function(
         self,
@@ -511,12 +727,24 @@ class Command:
     def create_not_valid_constraint_from_def(
         self, *, table: str, constraint: str, definition: str, is_validated: bool
     ) -> None:
+        # For partitioned tables, we can't use NOT VALID on foreign keys
+        # So we need to remove it from the definition
+        is_fk = "FOREIGN KEY" in definition.upper()
+        if self.partition_config and is_fk and not is_validated:
+            # Remove NOT VALID from the definition for partitioned tables
+            definition = definition.replace(" NOT VALID", "").replace("NOT VALID", "")
+
         add_constraint_sql = dedent("""
             ALTER TABLE {schema}.{table}
             ADD CONSTRAINT {constraint}
             {definition}
         """)
-        if is_validated:
+        # Only add NOT VALID if:
+        # 1. The constraint is validated (so we make it NOT VALID temporarily)
+        # 2. AND it's not a FK on a partitioned table (which doesn't support NOT VALID)
+        should_add_not_valid = is_validated and not (self.partition_config and is_fk)
+
+        if should_add_not_valid:
             # If the definition is for a valid constraint, alter it to be not
             # valid manually so that it can be created ONLINE.
             add_constraint_sql += " NOT VALID"

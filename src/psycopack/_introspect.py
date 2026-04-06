@@ -1,4 +1,5 @@
 import dataclasses
+import datetime
 from textwrap import dedent
 
 from . import _const, _cur
@@ -539,7 +540,9 @@ class Introspector:
     def get_pk_sequence_name(self, *, table: str) -> str:
         pk_info = self.get_primary_key_info(table=table)
         assert pk_info is not None
-        assert len(pk_info.columns) == 1
+        # Return empty string for composite PKs (e.g., partitioned tables)
+        if len(pk_info.columns) != 1:
+            return ""
 
         if pk_info.identity_type:
             self.cur.execute(
@@ -761,3 +764,55 @@ class Introspector:
         result = self.cur.fetchone()
         assert result is not None
         return bool(result[0])
+
+    def get_current_date(self) -> datetime.date:
+        self.cur.execute("SELECT CURRENT_DATE;")
+        result = self.cur.fetchone()
+        assert result is not None
+        current_date = result[0]
+        assert isinstance(current_date, datetime.date)
+        return current_date
+
+    def get_min_partition_date_value(self, *, table: str, column: str) -> datetime.date:
+        """
+        Get the minimum value of the partition column from the table.
+        If the table is empty or the column is NULL, returns the current date.
+        """
+        self.cur.execute(
+            psycopg.sql.SQL(
+                "SELECT COALESCE(MIN({column})::DATE, CURRENT_DATE) FROM {schema}.{table};"
+            )
+            .format(
+                column=psycopg.sql.Identifier(column),
+                schema=psycopg.sql.Identifier(self.schema),
+                table=psycopg.sql.Identifier(table),
+            )
+            .as_string(self.conn)
+        )
+        result = self.cur.fetchone()
+        assert result is not None
+        min_value = result[0]
+        assert isinstance(min_value, datetime.date)
+        return min_value
+
+    def get_max_partition_date_value(self, *, table: str, column: str) -> datetime.date:
+        """
+        Get the maximum value of the partition column from the table.
+        If the table is empty or the column is NULL, returns the current date.
+        """
+        self.cur.execute(
+            psycopg.sql.SQL(
+                "SELECT COALESCE(MAX({column})::DATE, CURRENT_DATE) FROM {schema}.{table};"
+            )
+            .format(
+                column=psycopg.sql.Identifier(column),
+                schema=psycopg.sql.Identifier(self.schema),
+                table=psycopg.sql.Identifier(table),
+            )
+            .as_string(self.conn)
+        )
+        result = self.cur.fetchone()
+        assert result is not None
+        max_value = result[0]
+        assert isinstance(max_value, datetime.date)
+        return max_value

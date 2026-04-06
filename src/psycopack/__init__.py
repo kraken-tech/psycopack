@@ -5,6 +5,7 @@ A customizable way to repack a table using psycopg.
 from ._conn import get_db_connection
 from ._cur import get_cursor
 from ._introspect import BackfillBatch
+from ._partition import DateRangeStrategy, PartitionConfig, PartitionInterval
 from ._registry import RegistryException, UnexpectedSyncStrategy
 from ._repack import (
     BasePsycopackError,
@@ -18,6 +19,7 @@ from ._repack import (
     NoReferencesPrivilege,
     NoReferringTableOwnership,
     NotTableOwner,
+    PartitioningForTableWithReferringFKs,
     PostBackfillBatchCallback,
     PrimaryKeyNotFound,
     Psycopack,
@@ -35,6 +37,7 @@ __all__ = (
     "BackfillBatch",
     "BasePsycopackError",
     "CompositePrimaryKey",
+    "DateRangeStrategy",
     "DeferrableUniqueConstraint",
     "FailureDueToLockTimeout",
     "InheritedTable",
@@ -45,11 +48,14 @@ __all__ = (
     "NoReferencesPrivilege",
     "NoReferringTableOwnership",
     "NotTableOwner",
+    "PartitionConfig",
+    "PartitionInterval",
+    "PartitioningForTableWithReferringFKs",
     "PostBackfillBatchCallback",
     "PrimaryKeyNotFound",
+    "Psycopack",
     "ReferringForeignKeyInDifferentSchema",
     "RegistryException",
-    "Psycopack",
     "Stage",
     "SyncStrategy",
     "TableDoesNotExist",
