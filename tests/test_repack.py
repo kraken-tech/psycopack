@@ -3080,3 +3080,161 @@ def test_partition_calling_stages_individually(
         """)
         partitions = cur.fetchall()
         assert len(partitions) > 0, "Table should have partitions"
+
+
+def test_pk_column_property_accessed_before_setup(
+    connection: _psycopg.Connection,
+) -> None:
+    """
+    Test pk_column property when accessed before setup_repacking.
+    """
+    with _cur.get_cursor(connection, logged=True) as cur:
+        # Create a simple table
+        cur.execute(
+            """
+            CREATE TABLE test_pk_early_access (
+                id bigint PRIMARY KEY,
+                data text
+            );
+            """
+        )
+        cur.execute("INSERT INTO test_pk_early_access (id, data) VALUES (1, 'test');")
+        connection.commit()
+
+        try:
+            # Create Psycopack instance
+            repack = Psycopack(
+                table="test_pk_early_access",
+                batch_size=1,
+                conn=connection,
+                cur=cur,
+            )
+            # Access pk_column BEFORE calling setup_repacking
+            pk_col = repack.pk_column
+            assert pk_col == "id"
+            # Verify _pk_column was cached
+            assert repack.pk_column == "id"
+        finally:
+            connection.rollback()
+            cur.execute("DROP TABLE IF EXISTS test_pk_early_access CASCADE;")
+            connection.commit()
+
+
+def test_pk_column_property_for_partitioned_table(
+    connection: _psycopg.Connection,
+) -> None:
+    """
+    Test pk_column property when _pk_column is None for partitioned tables.
+
+    This tests the code path where pk_column is accessed before setup_repacking
+    and handles composite primary keys (original PK + partition column).
+    """
+    with _cur.get_cursor(connection, logged=True) as cur:
+        # Create a simple table with date column for partitioning
+        cur.execute(
+            """
+            CREATE TABLE test_pk_column (
+                id bigint PRIMARY KEY,
+                datetime_field date NOT NULL,
+                data text
+            );
+            """
+        )
+        cur.execute(
+            "INSERT INTO test_pk_column (id, datetime_field, data) "
+            "VALUES (1, '2025-01-01', 'test');"
+        )
+        connection.commit()
+        try:
+            # Create Psycopack instance with partitioning
+            repack = Psycopack(
+                table="test_pk_column",
+                batch_size=1,
+                conn=connection,
+                cur=cur,
+                partition_config=_partition.PartitionConfig(
+                    column="datetime_field",
+                    num_of_extra_partitions_ahead=1,
+                    strategy=_partition.DateRangeStrategy(
+                        partition_by=_partition.PartitionInterval.DAY
+                    ),
+                ),
+                sync_strategy=SyncStrategy.CHANGE_LOG,
+            )
+
+            # Validate and setup to create the partitioned table
+            repack.pre_validate()
+            repack.setup_repacking()
+
+            # Now test pk_column property - for partitioned tables,
+            # the PK becomes composite (original PK + partition column)
+            # but pk_column should return the first column (original PK)
+            pk_col = repack.pk_column
+            assert pk_col == "id"
+
+            # Verify the copy table was created as partitioned
+            cur.execute(
+                f"""
+                SELECT relkind FROM pg_class
+                WHERE relname = '{repack.copy_table}'
+                AND relnamespace = 'public'::regnamespace;
+                """
+            )
+            result = cur.fetchone()
+            assert result is not None
+            assert result[0] == "p"  # 'p' means partitioned table
+
+        finally:
+            connection.rollback()
+            cur.execute("DROP TABLE IF EXISTS test_pk_column CASCADE;")
+            connection.commit()
+
+
+def test_full_method_resume_from_swap_stage(
+    connection: _psycopg.Connection,
+) -> None:
+    """
+    Test the full() method when resuming from SWAP stage.
+    """
+    with _cur.get_cursor(connection, logged=True) as cur:
+        # Create a test table
+        table_name = "test_resume_swap"
+        cur.execute(f"CREATE TABLE {table_name} (id bigint PRIMARY KEY, data text);")
+        cur.execute(f"INSERT INTO {table_name} (id, data) VALUES (1, 'test');")
+        connection.commit()
+
+        try:
+            repack = Psycopack(
+                table=table_name,
+                batch_size=100,
+                conn=connection,
+                cur=cur,
+            )
+
+            # Run through to POST_SYNC_UPDATE stage (but not SWAP)
+            repack.pre_validate()
+            repack.setup_repacking()
+            repack.backfill()
+            repack.sync_schemas()
+            repack.post_sync_update()
+
+            # Verify we're at SWAP stage (next to be completed)
+            current_stage = repack.tracker.get_current_stage()
+            assert current_stage == _tracker.Stage.SWAP
+
+            # Now call full() - it should run swap and clean_up
+            repack.full()
+
+            # Verify we've completed everything - after clean_up, the tracker row
+            # is deleted, so we're back at PRE_VALIDATION stage
+            current_stage = repack.tracker.get_current_stage()
+            assert current_stage == _tracker.Stage.PRE_VALIDATION
+
+        finally:
+            connection.rollback()
+            # Clean up any remaining tables
+            cur.execute(f"DROP TABLE IF EXISTS {table_name} CASCADE;")
+            cur.execute(
+                f"DROP TABLE IF EXISTS {table_name}_psycopack_repacked CASCADE;"
+            )
+            connection.commit()
