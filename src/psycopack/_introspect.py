@@ -765,14 +765,6 @@ class Introspector:
         assert result is not None
         return bool(result[0])
 
-    def get_current_date(self) -> datetime.date:
-        self.cur.execute("SELECT CURRENT_DATE;")
-        result = self.cur.fetchone()
-        assert result is not None
-        current_date = result[0]
-        assert isinstance(current_date, datetime.date)
-        return current_date
-
     def get_min_partition_date_value(self, *, table: str, column: str) -> datetime.date:
         """
         Get the minimum value of the partition column from the table.

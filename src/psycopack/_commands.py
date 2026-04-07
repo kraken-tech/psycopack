@@ -157,8 +157,8 @@ class Command:
         elif strategy.partition_by == _partition.PartitionInterval.MONTH:
             # Align to start of month
             return min_value.replace(day=1)
-        else:
-            raise ValueError(f"Unsupported partition_by: {strategy.partition_by}")
+        else:  # pragma: no cover
+            raise NotImplementedError
 
     def _get_last_partition_end_date(
         self,
@@ -186,8 +186,8 @@ class Command:
             for _ in range(1 + num_of_extra_partitions):
                 temp_date = (temp_date + datetime.timedelta(days=32)).replace(day=1)
             return temp_date
-        else:
-            raise ValueError(f"Unsupported partition_by: {strategy.partition_by}")
+        else:  # pragma: no cover
+            raise NotImplementedError
 
     def _get_partition_end_boundary(
         self,
@@ -207,8 +207,8 @@ class Command:
             return (current_partition_start + datetime.timedelta(days=32)).replace(
                 day=1
             )
-        else:
-            raise ValueError(f"Unsupported partition_by: {strategy.partition_by}")
+        else:  # pragma: no cover
+            raise NotImplementedError
 
     def _get_partition_suffix(
         self,
@@ -227,8 +227,8 @@ class Command:
         elif strategy.partition_by == _partition.PartitionInterval.MONTH:
             # Format: p202501 (YYYYMM)
             return f"p{current_partition_start.strftime('%Y%m')}"
-        else:
-            raise ValueError(f"Unsupported partition_by: {strategy.partition_by}")
+        else:  # pragma: no cover
+            raise NotImplementedError
 
     def _create_datetime_partition(
         self,

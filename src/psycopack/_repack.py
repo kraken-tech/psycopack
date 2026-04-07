@@ -180,10 +180,10 @@ class Psycopack:
         # after checking the table exists so we can safely introspect it.
         # The original table always has a single-column PK; partitioning
         # only affects the copy table until swap() is called.
-        self._pk_column = ""
+        self.pk_column = ""
         pk_info = self.introspector.get_primary_key_info(table=self.table)
         if pk_info and len(pk_info.columns) == 1:
-            self._pk_column = pk_info.columns[0]
+            self.pk_column = pk_info.columns[0]
 
         if not skip_permissions_check:
             self._check_user_permissions()
@@ -239,26 +239,6 @@ class Psycopack:
             command=self.command,
             schema=schema,
         )
-
-    @property
-    def pk_column(self) -> str:
-        """
-        Method to cache the name of the pk column in the instance as to avoid
-        calling introspection queries multiple times.
-
-        When partitioning is enabled, the table's PK becomes composite after
-        setup_repacking(). In that case, we return the first column which is
-        always the original single-column PK.
-        """
-        if self._pk_column:
-            return self._pk_column
-        pk_info = self.introspector.get_primary_key_info(table=self.table)
-        assert pk_info is not None
-        # For partitioned tables, PK becomes composite (original PK + partition column)
-        # We always want the first column, which is the original PK
-        assert len(pk_info.columns) >= 1
-        self._pk_column = pk_info.columns[0]
-        return self._pk_column
 
     def full(self) -> None:
         """
@@ -483,7 +463,7 @@ class Psycopack:
                 return
             elif self.sync_strategy == _sync_strategy.SyncStrategy.CHANGE_LOG:
                 return self._post_sync_update_for_change_log()
-            else:
+            else:  # pragma: no cover
                 raise NotImplementedError
 
     def _post_sync_update_for_change_log(self) -> None:
