@@ -79,7 +79,6 @@ class Command:
 
     def _create_partitioned_table(self, *, base_table: str, copy_table: str) -> None:
         assert self.partition_config is not None
-        assert isinstance(self.partition_config.strategy, _partition.DateRangeStrategy)
 
         # Create the parent partitioned table
         self.cur.execute(
@@ -103,6 +102,23 @@ class Command:
         self._create_partitions(base_table=base_table, copy_table=copy_table)
 
     def _create_partitions(self, *, base_table: str, copy_table: str) -> None:
+        assert self.partition_config is not None
+        strategy = self.partition_config.strategy
+
+        if isinstance(strategy, _partition.DateRangeStrategy):
+            self._create_date_range_partitions(
+                base_table=base_table, copy_table=copy_table
+            )
+        elif isinstance(strategy, _partition.NumericRangeStrategy):
+            self._create_numeric_range_partitions(
+                base_table=base_table, copy_table=copy_table
+            )
+        else:  # pragma: no cover
+            raise NotImplementedError
+
+    def _create_date_range_partitions(
+        self, *, base_table: str, copy_table: str
+    ) -> None:
         assert self.partition_config is not None
         strategy = self.partition_config.strategy
         assert isinstance(strategy, _partition.DateRangeStrategy)
@@ -260,6 +276,121 @@ class Command:
             .as_string(self.conn)
         )
 
+    def _create_numeric_range_partitions(
+        self, *, base_table: str, copy_table: str
+    ) -> None:
+        assert self.partition_config is not None
+        strategy = self.partition_config.strategy
+        assert isinstance(strategy, _partition.NumericRangeStrategy)
+
+        # Get the PK column name - this should be the same as partition_config.column
+        pk_column = self.partition_config.column
+        num_of_extra_partitions = self.partition_config.num_of_extra_partitions_ahead
+
+        # Get min and max positive values
+        min_and_max_positive = self.introspector.get_min_and_max_pk(
+            table=base_table, pk_column=pk_column, positive=True
+        )
+        # Get min and max negative values
+        min_and_max_negative = self.introspector.get_min_and_max_pk(
+            table=base_table, pk_column=pk_column, positive=False
+        )
+
+        # Handle negative values if they exist
+        if min_and_max_negative:
+            min_negative, max_negative = min_and_max_negative
+            # Align min_negative to range boundary (floor division)
+            partition_start = (
+                min_negative // strategy.range_size
+            ) * strategy.range_size
+            # Align max_negative to next boundary
+            partition_end = (
+                (max_negative // strategy.range_size) + 1
+            ) * strategy.range_size
+
+            current_start = partition_start
+            while current_start < partition_end:
+                current_end = current_start + strategy.range_size
+                partition_suffix = self._get_numeric_partition_suffix(
+                    start=current_start, end=current_end
+                )
+                self._create_numeric_partition(
+                    base_table=base_table,
+                    copy_table=copy_table,
+                    partition_suffix=partition_suffix,
+                    start=current_start,
+                    end=current_end,
+                )
+                current_start = current_end
+
+        # Handle positive values if they exist
+        if min_and_max_positive:
+            min_positive, max_positive = min_and_max_positive
+            # Align min_positive to range boundary (floor division)
+            partition_start = (
+                min_positive // strategy.range_size
+            ) * strategy.range_size
+            # Calculate end including extra partitions
+            partition_end = (
+                (max_positive // strategy.range_size) + 1 + num_of_extra_partitions
+            ) * strategy.range_size
+
+            current_start = partition_start
+            while current_start < partition_end:
+                current_end = current_start + strategy.range_size
+                partition_suffix = self._get_numeric_partition_suffix(
+                    start=current_start, end=current_end
+                )
+                self._create_numeric_partition(
+                    base_table=base_table,
+                    copy_table=copy_table,
+                    partition_suffix=partition_suffix,
+                    start=current_start,
+                    end=current_end,
+                )
+                current_start = current_end
+
+    def _get_numeric_partition_suffix(self, *, start: int, end: int) -> str:
+        """
+        Generate a numeric range partition suffix.
+        For negative ranges: returns pn1000_n1 (for -1000 to -1)
+        For positive ranges: returns p0_999 (for 0 to 999)
+        """
+        if start < 0:
+            return f"pn{abs(start)}_n{abs(end)}"
+        else:
+            return f"p{start}_{end - 1}"
+
+    def _create_numeric_partition(
+        self,
+        *,
+        base_table: str,
+        copy_table: str,
+        partition_suffix: str,
+        start: int,
+        end: int,
+    ) -> None:
+        """Create a single numeric range partition."""
+        self.cur.execute(
+            psycopg.sql.SQL(
+                dedent("""
+                CREATE TABLE {schema}.{partition_name}
+                PARTITION OF {schema}.{copy_table}
+                FOR VALUES FROM ({start}) TO ({end});
+                """)
+            )
+            .format(
+                schema=psycopg.sql.Identifier(self.schema),
+                partition_name=psycopg.sql.Identifier(
+                    f"{base_table}_{partition_suffix}"
+                ),
+                copy_table=psycopg.sql.Identifier(copy_table),
+                start=psycopg.sql.Literal(start),
+                end=psycopg.sql.Literal(end),
+            )
+            .as_string(self.conn)
+        )
+
     def drop_sequence_if_exists(self, *, seq: str) -> None:
         self.cur.execute(
             psycopg.sql.SQL("DROP SEQUENCE IF EXISTS {schema}.{seq};")
@@ -307,11 +438,14 @@ class Command:
     def add_pk(self, *, table: str, pk_column: str) -> None:
         # For partitioned tables, the PK must include all partitioning columns
         if self.partition_config:
+            # Build list of unique columns for the primary key
+            pk_column_list = [pk_column]
+            # Only add partition column if it's different from pk_column
+            if self.partition_config.column != pk_column:
+                pk_column_list.append(self.partition_config.column)
+
             pk_columns = psycopg.sql.SQL(", ").join(
-                [
-                    psycopg.sql.Identifier(pk_column),
-                    psycopg.sql.Identifier(self.partition_config.column),
-                ]
+                [psycopg.sql.Identifier(col) for col in pk_column_list]
             )
             self.cur.execute(
                 psycopg.sql.SQL(
