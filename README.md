@@ -9,14 +9,16 @@ Psycopack can be used to perform the following operations without downtime:
 - Converting a primary key from int to bigint.
 - Clustering (or repacking) the table to address table and index bloat (similar
   to `pg_repack`).
-- TODO: partition an existing table.
+- Partition an existing table (only by date range at the moment).
 
 ## Basics
 
 Psycopack uses a shadow-table approach.
 
 This means creating a copy of the table (shadow table), synchronising its data
-with the original table data, and swapping it with the original.
+with the original table data, and swapping it with the original. It is also
+possible to reverse the swap, so that you can verify the results before
+deciding to commit to them.
 
 The Psycopack process achieves the above in 6 major steps:
 
@@ -32,8 +34,26 @@ The Psycopack process achieves the above in 6 major steps:
    table.
 5. **Swap**: Effectively swaps the original table by the copy table. The
    original (now old) table will be kept in sync via triggers, in case the swap
-   process needs to be reverted.
-6. **Clean up**: Drops the old table.
+   process needs to be reverted. The swapping is done in a way that allows to
+   revert the process if something goes wrong, and without locking the table
+   for more than a few milliseconds. This is achieved via an operation called
+   **reverse swap**.
+6. **Clean up**: Drops the old table. After this point, the process is
+   irreversible, so it's recommended to verify the results before running this
+   step.
+
+There are also two strategies for performing the process:
+
+- **Change log** (Recommended): The backfill is performed in batches, and
+  changes after the process kicks off are tracked via a change log table. This
+  allows the copy table to synchronise its schema with the original table
+  without using concurrent index creation, which can take a long time and can
+  be blocked by long-running transactions.
+- **Triggers**: The backfill is performed in batches, and changes after the
+  process kicks off are immediately pushed to the copy table via triggers. This
+  allows the copy table to be up to date after the backfill process is
+  complete, the schema can be synchronised afterwards using operations that
+  only acquire weak locks.
 
 ## Python Interface
 
@@ -62,6 +82,7 @@ with get_db_connection("postgresql://user:password@host:port/db") as conn:
 
         # Finish the process.
         psycopack.sync_schemas()
+        repack.post_sync_update()
         psycopack.swap()
         psycopack.clean_up()
 ```
@@ -89,7 +110,6 @@ with get_db_connection("postgresql://user:password@host:port/db") as conn:
 ### Example: Repacking (or clustering)
 
 ```python
-
 from psycopack import psycopack, get_db_connection
 
 with get_db_connection("postgresql://user:password@host:port/db") as conn:
@@ -104,6 +124,30 @@ with get_db_connection("postgresql://user:password@host:port/db") as conn:
         # Simply run `.full()` to repack the whole table with further
         # customisation.
         psycopack.full()
+```
+
+### Example: Partitioning by date range
+
+```python
+from psycopack import psycopack, get_db_connection
+
+with get_db_connection("postgresql://user:password@host:port/db") as conn:
+    with conn.cursor() as cur:
+        psycopack = Psycopack(
+            table="to_repack",
+            batch_size=1,
+            conn=connection,
+            cur=cur,
+            change_log_batch_size=10,
+            sync_strategy=SyncStrategy.CHANGE_LOG,
+            partition_config=_partition.PartitionConfig(
+                column="datetime_field",
+                num_of_extra_partitions_ahead=10,
+                strategy=_partition.DateRangeStrategy(
+                    partition_by=_partition.PartitionInterval.DAY
+                ),
+            ),
+        )
 ```
 
 ## Known Limitations
@@ -124,6 +168,14 @@ The following types of tables aren't currently supported:
 - Tables with invalid indexes (the user should drop or re-index them first).
 - Tables with deferrable unique constraints.
 - Referring foreign keys on a different schema than the original table.
+
+### Limitations when partitioning:
+
+- The CHANGE_LOG strategy must be used when doing partitioning.
+- Unique constraints are skipped, as they are not supported on partitioned
+  tables. The user should add them manually after the process is complete or
+  after the setup step.
+- No support for referring fks yet.
 
 ## Required user permissions (or privileges)
 

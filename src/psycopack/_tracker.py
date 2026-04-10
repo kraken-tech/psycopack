@@ -201,7 +201,7 @@ class Tracker:
                 Stage.SWAP: [self.table, self.copy_table],
                 Stage.CLEAN_UP: [self.repacked_name, self.table],
             }
-        else:
+        else:  # pragma: no cover
             raise NotImplementedError
 
         if stage in table_dependencies:
@@ -223,7 +223,7 @@ class Tracker:
                 Stage.SWAP: [self.trigger],
                 Stage.CLEAN_UP: [self.repacked_trigger],
             }
-        else:
+        else:  # pragma: no cover
             raise NotImplementedError
 
         if stage in trigger_dependencies:
