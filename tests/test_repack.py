@@ -3238,3 +3238,457 @@ def test_full_method_resume_from_swap_stage(
                 f"DROP TABLE IF EXISTS {table_name}_psycopack_repacked CASCADE;"
             )
             connection.commit()
+
+
+def test_repack_with_numeric_range_partition(connection: _psycopg.Connection) -> None:
+    with _cur.get_cursor(connection) as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=100,
+        )
+        # Clean up referring tables from the factory.
+        cur.execute("DROP TABLE IF EXISTS referring_table CASCADE;")
+        cur.execute("DROP TABLE IF EXISTS not_valid_referring_table CASCADE;")
+        cur.execute("DROP TABLE IF EXISTS other_referring_table CASCADE;")
+
+        # Insert some additional rows to ensure we have a good range
+        cur.execute("INSERT INTO to_repack (id) VALUES (250), (500), (750), (1000);")
+
+        repack = Psycopack(
+            table="to_repack",
+            batch_size=10,
+            conn=connection,
+            cur=cur,
+            partition_config=_partition.PartitionConfig(
+                column="id",
+                num_of_extra_partitions_ahead=5,
+                strategy=_partition.NumericRangeStrategy(range_size=100),
+            ),
+        )
+        repack.full()
+
+        # Verify the table is now partitioned
+        cur.execute("""
+            SELECT
+              pt.relname AS partition_name
+            FROM
+              pg_inherits
+            JOIN
+              pg_class pt
+              ON pt.oid = inhrelid
+            JOIN
+              pg_class p
+              ON p.oid = inhparent
+            WHERE
+              p.relname = 'to_repack'
+            ORDER BY
+              partition_name;
+        """)
+        partitions = cur.fetchall()
+        assert len(partitions) > 0
+
+        # Verify partition names follow the ID-based format
+        # Example: to_repack_p0_99 (table_name_pSTART_END for range 0-99)
+        partition_names = [p[0] for p in partitions]
+
+        # All partitions should follow the naming format: to_repack_p{start}_{end}
+        for partition_name in partition_names:
+            assert partition_name.startswith("to_repack_p"), (
+                f"Invalid partition name: {partition_name}"
+            )
+
+        # We should have partitions covering 0-99, 100-199, ..., up to 1000-1099
+        # Plus 5 extra partitions: 1100-1199, 1200-1299, ..., 1500-1599
+        assert "to_repack_p0_99" in partition_names, "Should have partition for 0-99"
+        assert "to_repack_p100_199" in partition_names, (
+            "Should have partition for 100-199"
+        )
+        assert "to_repack_p1000_1099" in partition_names, (
+            "Should have partition for 1000-1099"
+        )
+
+        # Verify we have 5 extra partitions after the max ID (1000)
+        extra_partitions = [
+            p
+            for p in partition_names
+            if p
+            in [
+                "to_repack_p1100_1199",
+                "to_repack_p1200_1299",
+                "to_repack_p1300_1399",
+                "to_repack_p1400_1499",
+                "to_repack_p1500_1599",
+            ]
+        ]
+        assert len(extra_partitions) == 5, (
+            f"Should have exactly 5 extra partitions after max ID, got {len(extra_partitions)}"
+        )
+
+        # Verify the primary key includes both id and the partition column (which is also id)
+        # For ID-based partitioning where the PK IS the partition key, we get a composite key
+        cur.execute(
+            """
+            SELECT
+              a.attname AS column_name
+            FROM
+              pg_index i
+            JOIN
+              pg_attribute a
+              ON a.attrelid = i.indrelid
+              AND a.attnum = ANY(i.indkey)
+            WHERE
+              i.indrelid = 'to_repack'::regclass
+              AND i.indisprimary
+            ORDER BY
+              array_position(i.indkey, a.attnum);
+        """
+        )
+        pk_columns = [row[0] for row in cur.fetchall()]
+        # Since we're partitioning by 'id' and 'id' is the PK, we only need one pk
+        assert pk_columns == ["id"]
+
+        # Verify data integrity
+        cur.execute("SELECT COUNT(*) FROM to_repack;")
+        count = cur.fetchone()
+        assert count is not None
+        assert count[0] == 104
+
+        # Verify specific IDs are in correct partitions
+        cur.execute("SELECT id FROM to_repack WHERE id = 250;")
+        assert cur.fetchone() is not None
+
+        cur.execute("SELECT id FROM to_repack WHERE id = 1000;")
+        assert cur.fetchone() is not None
+
+
+def test_repack_with_numeric_range_partition_small_range(
+    connection: _psycopg.Connection,
+) -> None:
+    """Test numeric range partitioning with a smaller range size (10)"""
+    with _cur.get_cursor(connection) as cur:
+        factories.create_table_for_repacking(
+            connection=connection,
+            cur=cur,
+            table_name="to_repack",
+            rows=50,
+        )
+        # Clean up any referring tables from the factory
+        cur.execute("DROP TABLE IF EXISTS referring_table CASCADE;")
+        cur.execute("DROP TABLE IF EXISTS not_valid_referring_table CASCADE;")
+        cur.execute("DROP TABLE IF EXISTS other_referring_table CASCADE;")
+
+        repack = Psycopack(
+            table="to_repack",
+            batch_size=5,
+            conn=connection,
+            cur=cur,
+            partition_config=_partition.PartitionConfig(
+                column="id",
+                num_of_extra_partitions_ahead=2,
+                strategy=_partition.NumericRangeStrategy(range_size=10),
+            ),
+        )
+        repack.full()
+
+        # Verify the table is now partitioned
+        cur.execute("""
+            SELECT
+              pt.relname AS partition_name
+            FROM
+              pg_inherits
+            JOIN
+              pg_class pt
+              ON pt.oid = inhrelid
+            JOIN
+              pg_class p
+              ON p.oid = inhparent
+            WHERE
+              p.relname = 'to_repack'
+            ORDER BY
+              partition_name;
+        """)
+        partitions = cur.fetchall()
+        partition_names = [p[0] for p in partitions]
+
+        # With range_size=10 and 50 rows (IDs 1-50), we should have:
+        # p0_9, p10_19, p20_29, p30_39, p40_49, p50_59, p60_69 (2 extra)
+        assert "to_repack_p0_9" in partition_names
+        assert "to_repack_p10_19" in partition_names
+        assert "to_repack_p40_49" in partition_names
+        assert "to_repack_p50_59" in partition_names  # Extra partition 1
+        assert "to_repack_p60_69" in partition_names  # Extra partition 2
+
+        # Verify data integrity
+        cur.execute("SELECT COUNT(*) FROM to_repack;")
+        count = cur.fetchone()
+        assert count is not None
+        assert count[0] == 50
+
+
+def test_repack_with_numeric_range_partition_with_negative_values(
+    connection: _psycopg.Connection,
+) -> None:
+    with _cur.get_cursor(connection) as cur:
+        # Create a table with negative values
+        cur.execute("""
+            CREATE TABLE to_repack (
+                id INTEGER PRIMARY KEY,
+                data TEXT
+            );
+        """)
+        # Insert negative IDs: -500 to -1
+        cur.execute("""
+            INSERT INTO to_repack (id, data)
+            SELECT -gs, 'negative_' || gs::text
+            FROM generate_series(1, 500) AS gs;
+        """)
+        # Insert positive IDs: 1 to 100
+        cur.execute("""
+            INSERT INTO to_repack (id, data)
+            SELECT gs, 'positive_' || gs::text
+            FROM generate_series(1, 100) AS gs;
+        """)
+        connection.commit()
+
+        repack = Psycopack(
+            table="to_repack",
+            batch_size=20,
+            conn=connection,
+            cur=cur,
+            partition_config=_partition.PartitionConfig(
+                column="id",
+                num_of_extra_partitions_ahead=2,
+                strategy=_partition.NumericRangeStrategy(range_size=100),
+            ),
+        )
+        repack.full()
+
+        # Verify the table is now partitioned
+        cur.execute("""
+            SELECT
+              pt.relname AS partition_name
+            FROM
+              pg_inherits
+            JOIN
+              pg_class pt
+              ON pt.oid = inhrelid
+            JOIN
+              pg_class p
+              ON p.oid = inhparent
+            WHERE
+              p.relname = 'to_repack'
+            ORDER BY
+              partition_name;
+        """)
+        partitions = cur.fetchall()
+        partition_names = [p[0] for p in partitions]
+
+        # Verify negative partitions exist (IDs -500 to -1)
+        # Should have: pn500_n400, pn400_n300, ..., pn100_n0
+        assert "to_repack_pn500_n400" in partition_names
+        assert "to_repack_pn400_n300" in partition_names
+        assert "to_repack_pn100_n0" in partition_names
+
+        # Verify positive partitions exist (IDs 1 to 100)
+        # Should have: p0_99, p100_199, p200_299 (extra 1), p300_399 (extra 2)
+        assert "to_repack_p0_99" in partition_names
+        assert "to_repack_p100_199" in partition_names
+        assert "to_repack_p200_299" in partition_names
+        assert "to_repack_p300_399" in partition_names
+
+        # Verify data integrity
+        cur.execute("SELECT COUNT(*) FROM to_repack;")
+        count = cur.fetchone()
+        assert count is not None
+        # 500 negative + 100 positive
+        assert count[0] == 600
+
+        # Verify negative IDs are accessible
+        cur.execute("SELECT COUNT(*) FROM to_repack WHERE id < 0;")
+        negative_count = cur.fetchone()
+        assert negative_count is not None
+        assert negative_count[0] == 500
+
+        # Verify positive IDs are accessible
+        cur.execute("SELECT COUNT(*) FROM to_repack WHERE id > 0;")
+        positive_count = cur.fetchone()
+        assert positive_count is not None
+        assert positive_count[0] == 100
+
+
+def test_repack_with_numeric_range_partition_only_negative_values(
+    connection: _psycopg.Connection,
+) -> None:
+    with _cur.get_cursor(connection) as cur:
+        cur.execute("""
+            CREATE TABLE to_repack (
+                id INTEGER PRIMARY KEY,
+                data TEXT
+            );
+        """)
+        # Insert only negative values: -300 to -1
+        cur.execute("""
+            INSERT INTO to_repack (id, data)
+            SELECT -gs, 'negative_' || gs::text
+            FROM generate_series(1, 300) AS gs;
+        """)
+        connection.commit()
+
+        repack = Psycopack(
+            table="to_repack",
+            batch_size=20,
+            conn=connection,
+            cur=cur,
+            partition_config=_partition.PartitionConfig(
+                column="id",
+                num_of_extra_partitions_ahead=1,
+                strategy=_partition.NumericRangeStrategy(range_size=100),
+            ),
+        )
+        repack.full()
+
+        # Verify the table is now partitioned
+        cur.execute("""
+            SELECT
+              pt.relname AS partition_name
+            FROM
+              pg_inherits
+            JOIN
+              pg_class pt
+              ON pt.oid = inhrelid
+            JOIN
+              pg_class p
+              ON p.oid = inhparent
+            WHERE
+              p.relname = 'to_repack'
+            ORDER BY
+              partition_name;
+        """)
+        partitions = cur.fetchall()
+        partition_names = [p[0] for p in partitions]
+
+        # Should only have negative partitions: pn300_n200, pn200_n100, pn100_n0
+        assert "to_repack_pn300_n200" in partition_names
+        assert "to_repack_pn200_n100" in partition_names
+        assert "to_repack_pn100_n0" in partition_names
+
+        # Should NOT have any positive partitions
+        positive_partitions = [
+            p for p in partition_names if not p.endswith(tuple(["n0", "n100", "n200"]))
+        ]
+        assert len(positive_partitions) == 0
+
+        # Verify data integrity
+        cur.execute("SELECT COUNT(*) FROM to_repack;")
+        count = cur.fetchone()
+        assert count is not None
+        assert count[0] == 300
+
+        # Verify all are negative
+        cur.execute("SELECT COUNT(*) FROM to_repack WHERE id > 0;")
+        positive_count = cur.fetchone()
+        assert positive_count is not None
+        assert positive_count[0] == 0
+
+
+def test_repack_with_numeric_range_partition_on_non_pk_column(
+    connection: _psycopg.Connection,
+) -> None:
+    """Test numeric range partitioning on a column that is NOT the primary key (composite PK)"""
+    with _cur.get_cursor(connection) as cur:
+        # Create a table where we partition by user_id (not the PK)
+        cur.execute("""
+            CREATE TABLE to_repack (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                data TEXT
+            );
+        """)
+        # Insert data with various user_ids
+        # user_id ranges from 1 to 250 (deterministic)
+        cur.execute("""
+            INSERT INTO to_repack (user_id, data)
+            SELECT
+                ((gs - 1) % 250 + 1),  -- Cycles through 1-250
+                'data_' || gs::text
+            FROM generate_series(1, 200) AS gs;
+        """)
+        connection.commit()
+
+        repack = Psycopack(
+            table="to_repack",
+            batch_size=20,
+            conn=connection,
+            cur=cur,
+            partition_config=_partition.PartitionConfig(
+                column="user_id",  # Partition by user_id, not id (the PK)
+                num_of_extra_partitions_ahead=2,
+                strategy=_partition.NumericRangeStrategy(range_size=100),
+            ),
+        )
+        repack.full()
+
+        # Verify the table is now partitioned
+        cur.execute("""
+            SELECT
+              pt.relname AS partition_name
+            FROM
+              pg_inherits
+            JOIN
+              pg_class pt
+              ON pt.oid = inhrelid
+            JOIN
+              pg_class p
+              ON p.oid = inhparent
+            WHERE
+              p.relname = 'to_repack'
+            ORDER BY
+              partition_name;
+        """)
+        partitions = cur.fetchall()
+        partition_names = [p[0] for p in partitions]
+
+        # Should have partitions for user_id ranges
+        # user_id is 1-250, so we should have: p0_99, p100_199, p200_299, p300_399, p400_499
+        assert "to_repack_p0_99" in partition_names
+        assert "to_repack_p100_199" in partition_names
+        assert "to_repack_p200_299" in partition_names  # Contains max user_id (250)
+        assert "to_repack_p300_399" in partition_names  # Extra partition 1
+        assert "to_repack_p400_499" in partition_names  # Extra partition 2
+
+        # Verify the primary key is composite: (id, user_id)
+        cur.execute("""
+            SELECT
+              a.attname AS column_name
+            FROM
+              pg_index i
+            JOIN
+              pg_attribute a
+              ON a.attrelid = i.indrelid
+              AND a.attnum = ANY(i.indkey)
+            WHERE
+              i.indrelid = 'to_repack'::regclass
+              AND i.indisprimary
+            ORDER BY
+              array_position(i.indkey, a.attnum);
+        """)
+        pk_columns = [row[0] for row in cur.fetchall()]
+        assert pk_columns == ["id", "user_id"]
+
+        # Verify data integrity
+        cur.execute("SELECT COUNT(*) FROM to_repack;")
+        count = cur.fetchone()
+        assert count is not None
+        assert count[0] == 200
+
+        # Verify we can query by both id and user_id
+        cur.execute("SELECT id, user_id FROM to_repack WHERE id = 1;")
+        row = cur.fetchone()
+        assert row is not None
+
+        cur.execute("SELECT COUNT(*) FROM to_repack WHERE user_id <= 100;")
+        count_low_users = cur.fetchone()
+        assert count_low_users is not None
+        assert count_low_users[0] > 0

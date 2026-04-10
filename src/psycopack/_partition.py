@@ -13,8 +13,12 @@ class DateRangeStrategy:
 
 
 @dataclasses.dataclass
+class NumericRangeStrategy:
+    range_size: int
+
+
+@dataclasses.dataclass
 class PartitionConfig:
     column: str
     num_of_extra_partitions_ahead: int
-    # Todo: Add support for other types of partitioning.
-    strategy: DateRangeStrategy
+    strategy: DateRangeStrategy | NumericRangeStrategy
