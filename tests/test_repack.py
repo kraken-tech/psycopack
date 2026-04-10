@@ -21,7 +21,6 @@ from psycopack import (
     PartitioningForTableWithReferringFKs,
     PrimaryKeyNotFound,
     Psycopack,
-    ReferringForeignKeyInDifferentSchema,
     SyncStrategy,
     TableDoesNotExist,
     TableHasTriggers,
@@ -1991,7 +1990,14 @@ def test_with_non_default_schema(connection: _psycopg.Connection) -> None:
         )
 
 
-def test_with_fks_from_another_schema(connection: _psycopg.Connection) -> None:
+@pytest.mark.parametrize(
+    "sync_strategy",
+    [SyncStrategy.DIRECT_TRIGGER, SyncStrategy.CHANGE_LOG],
+)
+def test_repack_with_referring_fks_from_another_schema(
+    connection: _psycopg.Connection,
+    sync_strategy: SyncStrategy,
+) -> None:
     with _cur.get_cursor(connection, logged=True) as cur:
         factories.create_table_for_repacking(
             connection=connection,
@@ -2000,25 +2006,186 @@ def test_with_fks_from_another_schema(connection: _psycopg.Connection) -> None:
             rows=10,
             pk_type="integer",
         )
+
+        cur.execute("CREATE SCHEMA sweet_schema;")
+
+        cur.execute(
+            dedent("""
+            CREATE TABLE sweet_schema.referring_table (
+              id SERIAL PRIMARY KEY,
+              to_repack_id INTEGER
+            );
+            """)
+        )
+        cur.execute(
+            dedent("""
+            ALTER TABLE sweet_schema.referring_table
+            ADD CONSTRAINT cross_schema_referring
+            FOREIGN KEY (to_repack_id)
+            REFERENCES public.to_repack(id);
+            """)
+        )
+        cur.execute(
+            dedent("""
+            INSERT INTO sweet_schema.referring_table (to_repack_id)
+            SELECT generate_series(1, 10);
+            """)
+        )
+
+        cur.execute(
+            dedent("""
+            CREATE TABLE sweet_schema.not_valid_referring_table (
+              id SERIAL PRIMARY KEY,
+              to_repack_id INTEGER
+            );
+            """)
+        )
+        cur.execute(
+            dedent("""
+            ALTER TABLE sweet_schema.not_valid_referring_table
+            ADD CONSTRAINT cross_schema_not_valid_referring
+            FOREIGN KEY (to_repack_id)
+            REFERENCES public.to_repack(id)
+            NOT VALID;
+            """)
+        )
+        cur.execute(
+            dedent("""
+            INSERT INTO sweet_schema.not_valid_referring_table (to_repack_id)
+            SELECT generate_series(1, 10);
+            """)
+        )
+
+        table_before = _collect_table_info(table="to_repack", connection=connection)
+
         repack = Psycopack(
             table="to_repack",
             batch_size=1,
             conn=connection,
             cur=cur,
+            sync_strategy=sync_strategy,
+            change_log_batch_size=10
+            if sync_strategy == SyncStrategy.CHANGE_LOG
+            else None,
         )
-        schema = "sweet_schema"
-        cur.execute(f"CREATE SCHEMA {schema};")
+        repack.full()
+
+        table_after = _collect_table_info(table="to_repack", connection=connection)
+        _assert_repack(
+            table_before=table_before,
+            table_after=table_after,
+            repack=repack,
+            cur=cur,
+        )
+
+        introspector = _introspect.Introspector(
+            conn=connection,
+            cur=cur,
+            schema="public",
+        )
+        fks_after = introspector.get_referring_fks(table="to_repack")
+
+        assert {
+            (fk.schema, fk.referring_table, fk.name, fk.is_validated)
+            for fk in fks_after
+        } == {
+            ("public", "referring_table", "referring_table_to_repack_id_fkey", True),
+            ("public", "not_valid_referring_table", "not_valid_referring", False),
+            ("sweet_schema", "referring_table", "cross_schema_referring", True),
+            (
+                "sweet_schema",
+                "not_valid_referring_table",
+                "cross_schema_not_valid_referring",
+                False,
+            ),
+        }
+
         cur.execute(
-            dedent(f"""
-            CREATE TABLE {schema}.referring_table (
-              to_repack_id INTEGER REFERENCES public.to_repack(id)
-            );
+            dedent("""
+            SELECT
+              referring_ns.nspname AS referring_schema,
+              referring_cls.relname AS referring_table,
+              con.conname AS constraint_name,
+              con.convalidated AS is_validated,
+              referred_ns.nspname AS referred_schema,
+              referred_cls.relname AS referred_table
+            FROM
+              pg_constraint con
+            INNER JOIN
+              pg_class referring_cls
+              ON con.conrelid = referring_cls.oid
+            INNER JOIN
+              pg_namespace referring_ns
+              ON referring_cls.relnamespace = referring_ns.oid
+            INNER JOIN
+              pg_class referred_cls
+              ON con.confrelid = referred_cls.oid
+            INNER JOIN
+              pg_namespace referred_ns
+              ON referred_cls.relnamespace = referred_ns.oid
+            WHERE
+              con.contype = 'f'
+              AND referred_ns.nspname = 'public'
+              AND referred_cls.relname = 'to_repack'
+            ORDER BY
+              referring_ns.nspname,
+              referring_cls.relname,
+              con.conname;
             """)
         )
-        with pytest.raises(
-            ReferringForeignKeyInDifferentSchema, match=f"{schema}.referring_table"
-        ):
-            repack.full()
+        constraints = cur.fetchall()
+        assert constraints == [
+            (
+                "public",
+                "not_valid_referring_table",
+                "not_valid_referring",
+                False,
+                "public",
+                "to_repack",
+            ),
+            (
+                "public",
+                "referring_table",
+                "referring_table_to_repack_id_fkey",
+                True,
+                "public",
+                "to_repack",
+            ),
+            (
+                "sweet_schema",
+                "not_valid_referring_table",
+                "cross_schema_not_valid_referring",
+                False,
+                "public",
+                "to_repack",
+            ),
+            (
+                "sweet_schema",
+                "referring_table",
+                "cross_schema_referring",
+                True,
+                "public",
+                "to_repack",
+            ),
+        ]
+
+        cur.execute(
+            dedent("""
+            SELECT
+              p.id,
+              t.id
+            FROM
+              sweet_schema.referring_table p
+            INNER JOIN
+              public.to_repack t
+              ON p.to_repack_id = t.id
+            ORDER BY
+              p.id
+            LIMIT 1;
+            """)
+        )
+        row = cur.fetchone()
+        assert row is not None
 
 
 def test_with_deferrable_unique_constraint(connection: _psycopg.Connection) -> None:
