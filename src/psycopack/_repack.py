@@ -742,11 +742,15 @@ class Psycopack:
                 assert self.change_log is not None
                 assert self.change_log_trigger is not None
                 assert self.change_log_function is not None
+                assert self.change_log_copy_function is not None
                 self.command.drop_table_if_exists(table=self.change_log)
                 self.command.drop_trigger_if_exists(
                     table=self.table, trigger=self.change_log_trigger
                 )
                 self.command.drop_function_if_exists(function=self.change_log_function)
+                self.command.drop_function_if_exists(
+                    function=self.change_log_copy_function
+                )
 
     def _create_copy_table(self) -> None:
         # Checks if other relating objects have FKs pointing to the copy table
