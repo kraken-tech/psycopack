@@ -115,6 +115,7 @@ class _FunctionInfo:
     function_exists: bool
     repacked_function_exists: bool
     change_log_function_exists: bool
+    change_log_copy_function_exists: bool
 
 
 def _get_function_info(repack: Psycopack, cur: _cur.Cursor) -> _FunctionInfo:
@@ -129,10 +130,20 @@ def _get_function_info(repack: Psycopack, cur: _cur.Cursor) -> _FunctionInfo:
         change_log_function_exists = cur.fetchone() is not None
     else:
         change_log_function_exists = False
+
+    if repack.change_log_copy_function is not None:
+        cur.execute(
+            f"SELECT 1 FROM pg_proc WHERE proname = '{repack.change_log_copy_function}'"
+        )
+        change_log_copy_function_exists = cur.fetchone() is not None
+    else:
+        change_log_copy_function_exists = False
+
     return _FunctionInfo(
         function_exists=function_exists,
         repacked_function_exists=repacked_function_exists,
         change_log_function_exists=change_log_function_exists,
+        change_log_copy_function_exists=change_log_copy_function_exists,
     )
 
 
@@ -197,6 +208,7 @@ def _assert_reset(repack: Psycopack, cur: _cur.Cursor) -> None:
     if repack.sync_strategy == SyncStrategy.CHANGE_LOG:
         assert trigger_info.change_log_trigger_exists is False
         assert function_info.change_log_function_exists is False
+        assert function_info.change_log_copy_function_exists is False
         assert repack.change_log is not None
         assert repack.introspector.get_table_oid(table=repack.change_log) is None
 
