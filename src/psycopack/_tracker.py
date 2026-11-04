@@ -48,6 +48,10 @@ class FailureDueToLockTimeout(TrackerException):
     pass
 
 
+class NoPsycopackConversionInProgress(TrackerException):
+    pass
+
+
 @dataclasses.dataclass
 class StageInfo:
     name: str
@@ -131,9 +135,12 @@ class Tracker:
                     f"larger lock timeout value."
                 ) from exc
 
-    def get_current_stage(self) -> Stage:
+    def get_current_stage(self, create_if_not_exist: bool = True) -> Stage:
         with self.command.session_lock(name=self.tracker_lock):
-            self._ensure_tracker_table_exists()
+            if create_if_not_exist:
+                self._ensure_tracker_table_exists()
+            elif not self._tracker_table_exists():
+                raise NoPsycopackConversionInProgress
             return self._get_unfinished_stage()
 
     def _ensure_tracker_table_exists(self, stage: Stage | None = None) -> None:
