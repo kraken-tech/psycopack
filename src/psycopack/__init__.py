@@ -35,7 +35,7 @@ from ._repack import (
     UnsupportedPrimaryKey,
 )
 from ._sync_strategy import SyncStrategy
-from ._tracker import FailureDueToLockTimeout, Stage
+from ._tracker import FailureDueToLockTimeout, NoPsycopackConversionInProgress, Stage
 
 
 __all__ = (
@@ -50,6 +50,7 @@ __all__ = (
     "InvalidPrimaryKeyTypeForConversion",
     "InvalidStageForReset",
     "NoCreateAndUsagePrivilegeOnSchema",
+    "NoPsycopackConversionInProgress",
     "NoReferencesPrivilege",
     "NoReferringTableOwnership",
     "NotTableOwner",
