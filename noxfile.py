@@ -32,7 +32,6 @@ def temp_lock_file() -> Generator[IO[str], None, None]:
 @nox.parametrize(
     "python",
     [
-        nox.param("3.10", id="python=3.10"),
         nox.param("3.11", id="python=3.11"),
         nox.param("3.12", id="python=3.12"),
     ],

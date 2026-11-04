@@ -43,7 +43,6 @@ jobs:
           python-version: |
             3.12
             3.11
-            3.10
           cache: 'pip'
           cache-dependency-path: |
             pyproject.toml
