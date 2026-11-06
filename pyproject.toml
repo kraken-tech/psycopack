@@ -21,7 +21,7 @@ where = ["src"]
 
 [project]
 name = "psycopack"
-version = "0.0.1"
+version = "0.1.1"
 description = "A customizable way to repack a table using psycopg."
 license.file = "LICENSE"
 readme = "README.md"
