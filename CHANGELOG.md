@@ -8,6 +8,6 @@ Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 
 ## [Unreleased]
 
-## [0.0.1] - YYYY-MM-DD
+## [0.1.0] - 2026-11-06
 
-TBD.
+Initial version published to PyPI.
